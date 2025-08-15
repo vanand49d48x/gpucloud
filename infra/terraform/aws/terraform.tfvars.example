@@ -1,0 +1,7 @@
+aws_region         = "us-east-1"
+vpc_id            = "vpc-03cbed5679205a9b8"
+subnet_id         = "subnet-01e180664452ff6d4"
+security_group_id = "sg-0c8ab2b02d3f4e766"
+instance_profile  = "gpucloud-instance-role"
+ssh_key_name      = "gpucloud-mvp-key"
+base_ami_id       = ""

@@ -1,0 +1,23 @@
+[project]
+name = "gpucloud-api"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "sqlmodel",
+  "alembic",
+  "psycopg2-binary",
+  "python-jose[cryptography]",
+  "passlib[bcrypt]",
+  "pydantic-settings",
+  "redis",
+  "rq",
+  "requests",
+  "stripe",
+  "prometheus-client",
+  "python-dotenv"
+]
+
+[tool.uvicorn]
+factory = false
