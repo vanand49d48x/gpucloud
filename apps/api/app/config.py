@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     CATALOG_CACHE_TTL_SECONDS: int = 3600
     
     class Config:
-        env_file = "../../.env"
+        env_file = "/home/paperspace/mypods/.env"
         extra = "ignore"  # Ignore extra environment variables
 
 settings = Settings()

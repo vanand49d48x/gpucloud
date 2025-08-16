@@ -28,6 +28,7 @@ class Pod(SQLModel, table=True):
     status: PodStatus = Field(default=PodStatus.pending)
     provider: Provider = Field(default=Provider.aws)
     instance_id: Optional[str] = None
+    instance_type: Optional[str] = None  # Store the AWS instance type
     public_ip: Optional[str] = None
     gpu_type: Optional[str] = None
     vram_gb: Optional[int] = None
