@@ -143,13 +143,27 @@ start_nginx() {
 
 # Function to start frontend
 start_frontend() {
-    log "🎨 Frontend served by nginx proxy..."
+    log "🎨 Starting frontend on localhost only..."
     
-    # Frontend is served by nginx - no need to start directly
-    FRONTEND_PID="nginx-proxy"
-    echo $FRONTEND_PID > /tmp/gpucloud_frontend.pid
-    
-    log "✅ Frontend will be served by nginx proxy"
+    if ! is_port_listening 3000; then
+        cd "$PROJECT_ROOT/apps/web"
+        
+        # Start Next.js server on localhost only (127.0.0.1) to prevent external access
+        # This ensures only Nginx can proxy to it
+        npx next start --hostname 127.0.0.1 > /tmp/gpucloud_frontend.log 2>&1 &
+        FRONTEND_PID=$!
+        echo $FRONTEND_PID > /tmp/gpucloud_frontend.pid
+        
+        # Wait for frontend to be ready
+        wait_for_service "Frontend" 3000
+        
+        log "✅ Frontend started on localhost only (PID: $FRONTEND_PID)"
+    else
+        log "✅ Frontend already running on localhost"
+        # Get PID from existing process
+        FRONTEND_PID=$(ss -tlnp | grep :3000 | awk '{print $7}' | cut -d',' -f1 | cut -d'(' -f2)
+        echo $FRONTEND_PID > /tmp/gpucloud_frontend.pid
+    fi
 }
 
 # Function to start health monitoring
@@ -225,6 +239,7 @@ start_all() {
     echo "  Backend API: http://184.105.5.179/v1/ (via nginx)"
     echo "  API Health: http://184.105.5.179/v1/health (via nginx)"
     echo "  API Docs: http://184.105.5.179/docs (via nginx)"
+    echo "  Note: Frontend runs on localhost:3000 (Nginx proxy only)"
     echo ""
     echo "📋 Management Commands:"
     echo "  Status: ./gpucloud.sh status"

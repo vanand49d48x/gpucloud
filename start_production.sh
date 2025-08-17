@@ -162,9 +162,14 @@ API_PID=$!
 # Wait for API to be ready
 wait_for_service "FastAPI" $API_PORT
 
-# Frontend is served by nginx proxy - no need to start directly
-log "🎨 Frontend will be served by nginx proxy..."
-FRONTEND_PID="nginx-proxy"
+# Frontend is served by nginx proxy - start on localhost only
+log "🎨 Starting frontend on localhost only..."
+cd "$PROJECT_ROOT/apps/web"
+npx next start --hostname 127.0.0.1 > /tmp/gpucloud_frontend.log 2>&1 &
+FRONTEND_PID=$!
+
+# Wait for frontend to be ready
+wait_for_service "Frontend" 3000
 
 # Display status
 log "${GREEN}🎉 GPUCloud Production System Started Successfully!${NC}"
