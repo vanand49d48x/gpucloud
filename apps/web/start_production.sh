@@ -31,6 +31,34 @@ check_port() {
     fi
 }
 
+# Function to build frontend (clean build)
+build_frontend() {
+    log "${GREEN}Building Next.js frontend (clean build)...${NC}"
+    cd "$(dirname "$0")"
+    
+    # Remove old build files to ensure clean build
+    if [ -d ".next" ]; then
+        log "${YELLOW}Removing old build files for clean build...${NC}"
+        rm -rf .next
+    fi
+    
+    # Install dependencies if needed
+    if [ ! -d "node_modules" ]; then
+        log "${GREEN}Installing Node.js dependencies...${NC}"
+        npm install
+    fi
+    
+    # Build the frontend
+    log "${GREEN}Building Next.js application...${NC}"
+    if npm run build; then
+        log "${GREEN}Frontend build completed successfully${NC}"
+        return 0
+    else
+        log "${RED}Frontend build failed${NC}"
+        return 1
+    fi
+}
+
 # Function to start frontend
 start_frontend() {
     log "${GREEN}Starting Next.js frontend on port $PORT...${NC}"
@@ -42,17 +70,18 @@ start_frontend() {
         sleep 2
     fi
     
+    # Always build frontend first to ensure clean build
+    if ! build_frontend; then
+        log "${RED}Failed to build frontend, cannot start${NC}"
+        return 1
+    fi
+    
     # Start the frontend
     cd "$(dirname "$0")"
     
-    # Use production build if available, otherwise fallback to dev
-    if [ -d ".next" ] && [ -f "package.json" ]; then
-        log "${GREEN}Using production build${NC}"
-        npm start &
-    else
-        log "${YELLOW}Production build not found, using development mode${NC}"
-        npm run dev &
-    fi
+    # Use production build (we just built it)
+    log "${GREEN}Using fresh production build${NC}"
+    npm start &
     
     FRONTEND_PID=$!
     echo $FRONTEND_PID > /tmp/frontend.pid

@@ -141,9 +141,43 @@ start_nginx() {
     fi
 }
 
+# Function to build frontend (clean build)
+build_frontend() {
+    log "🔨 Building frontend (clean build)..."
+    cd "$PROJECT_ROOT/apps/web"
+    
+    # Remove old build files to ensure clean build
+    if [ -d ".next" ]; then
+        log "🧹 Removing old build files..."
+        rm -rf .next
+    fi
+    
+    # Install dependencies if needed
+    if [ ! -d "node_modules" ]; then
+        log "📦 Installing Node.js dependencies..."
+        npm install
+    fi
+    
+    # Build the frontend
+    log "🏗️  Building Next.js application..."
+    if npm run build; then
+        log "✅ Frontend build completed successfully"
+        return 0
+    else
+        log "${RED}❌ Frontend build failed${NC}"
+        return 1
+    fi
+}
+
 # Function to start frontend
 start_frontend() {
     log "🎨 Starting frontend on localhost only..."
+    
+    # Always build frontend first to ensure clean build
+    if ! build_frontend; then
+        log "${RED}❌ Failed to build frontend, cannot start${NC}"
+        return 1
+    fi
     
     if ! is_port_listening 3000; then
         cd "$PROJECT_ROOT/apps/web"
@@ -412,22 +446,44 @@ restart_all() {
     start_all
 }
 
+# Function to rebuild frontend only
+rebuild_frontend() {
+    log "${YELLOW}🔄 Rebuilding frontend only...${NC}"
+    
+    # Stop frontend if running
+    if is_port_listening 3000; then
+        log "🛑 Stopping frontend for rebuild..."
+        stop_service "Frontend" "/tmp/gpucloud_frontend.pid" "next"
+        sleep 2
+    fi
+    
+    # Build and start frontend
+    if start_frontend; then
+        log "${GREEN}✅ Frontend rebuilt and started successfully${NC}"
+    else
+        log "${RED}❌ Frontend rebuild failed${NC}"
+        return 1
+    fi
+}
+
 # Function to show help
 show_help() {
     echo "GPUCloud Service Management Script"
     echo ""
-    echo "Usage: ./gpucloud.sh {start|stop|restart|status|logs|help}"
+    echo "Usage: ./gpucloud.sh {start|stop|restart|rebuild|status|logs|help}"
     echo ""
     echo "Commands:"
     echo "  start   - Start all GPUCloud services"
     echo "  stop    - Stop all GPUCloud services"
     echo "  restart - Restart all GPUCloud services"
+    echo "  rebuild - Rebuild and restart frontend only"
     echo "  status  - Show status of all services"
     echo "  logs    - Show service logs"
     echo "  help    - Show this help message"
     echo ""
     echo "Examples:"
     echo "  ./gpucloud.sh start    # Start all services"
+    echo "  ./gpucloud.sh rebuild  # Rebuild frontend only"
     echo "  ./gpucloud.sh status   # Check service status"
     echo "  ./gpucloud.sh logs     # View service logs"
 }
@@ -442,6 +498,9 @@ case "${1:-help}" in
         ;;
     restart)
         restart_all
+        ;;
+    rebuild)
+        rebuild_frontend
         ;;
     status)
         show_status

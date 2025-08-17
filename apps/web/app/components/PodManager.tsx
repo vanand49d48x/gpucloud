@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Play, Trash2, FileText, Eye, Plus, Search, Filter, Terminal, Globe } from 'lucide-react';
+import { Play, Trash2, FileText, Eye, Plus, Search, Filter, Terminal, Globe, Square } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import GPUCatalog from './GPUCatalog';
 import WebTerminal from './WebTerminal';
@@ -274,6 +274,47 @@ export default function PodManager() {
     }
   };
 
+  // Delete a pod completely
+  const deletePod = async (podId: number) => {
+    if (!token) return;
+    
+    // Confirm deletion
+    if (!confirm('Are you sure you want to delete this pod? This action cannot be undone and will terminate the AWS instance if it\'s running.')) {
+      return;
+    }
+    
+    try {
+      const response = await fetch(`${API_BASE}/v1/pods/${podId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('Pod deleted:', result);
+        
+        if (result.message.includes('being stopped')) {
+          // Pod is being stopped, show message and refresh
+          alert(result.message);
+          fetchPods();
+        } else {
+          // Pod was deleted successfully, remove from local state
+          setPods(prevPods => prevPods.filter(pod => pod.id !== podId));
+          alert('Pod deleted successfully');
+        }
+      } else {
+        const error = await response.json();
+        console.error('Delete failed:', error);
+        alert(`Delete failed: ${error.detail}`);
+      }
+    } catch (error) {
+      console.error('Error deleting pod:', error);
+      alert('Error deleting pod');
+    }
+  };
+
   useEffect(() => {
     if (token) {
       fetchPods();
@@ -433,9 +474,9 @@ export default function PodManager() {
                 <button 
                   onClick={() => stopPod(pod.id)}
                   disabled={false}
-                  className="btn-danger text-sm"
+                  className="btn-warning text-sm"
                 >
-                  <Trash2 className="w-4 h-4 mr-2" />
+                  <Square className="w-4 h-4 mr-2" />
                   Stop
                 </button>
               ) : (
@@ -448,6 +489,18 @@ export default function PodManager() {
                   {pod.status === 'starting' ? 'Starting...' : 'Start'}
                 </button>
               )}
+              
+              {/* Delete button - always visible */}
+              <button 
+                onClick={() => deletePod(pod.id)}
+                disabled={pod.status === 'stopping'}
+                className={`btn-danger text-sm ${pod.status === 'stopping' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                title={pod.status === 'stopping' ? 'Pod is stopping, wait before deleting' : 'Delete pod permanently'}
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Delete
+              </button>
+              
               <button className="btn-secondary text-sm">
                 <FileText className="w-4 h-4 mr-2" />
                 Logs

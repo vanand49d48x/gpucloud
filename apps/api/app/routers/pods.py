@@ -170,3 +170,87 @@ def force_reset_pod(pod_id: int, session: Session = Depends(get_session), user=D
     except Exception as e:
         logger.error(f"Failed to force reset pod {pod_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to reset pod")
+
+@router.delete("/pods/{pod_id}")
+def delete_pod(pod_id: int, session: Session = Depends(get_session), user=Depends(current_user)):
+    """Delete a pod completely - stop if running, terminate AWS instance, and remove from database"""
+    try:
+        pod = session.get(Pod, pod_id)
+        if not pod or pod.user_id != user.id:
+            raise HTTPException(status_code=404, detail="pod not found")
+        
+        # If pod is running, stop it first
+        if pod.status in (PodStatus.running, PodStatus.starting):
+            logger.info(f"Stopping running pod {pod_id} before deletion")
+            # Enqueue teardown job to stop the instance
+            job = q.enqueue("apps.api.workers.provisioner.teardown_pod", pod.id)
+            logger.info(f"Enqueued teardown job {job.id} for pod {pod.id} before deletion")
+            
+            # Update status to stopping
+            pod.status = PodStatus.stopping
+            session.add(pod)
+            session.commit()
+            
+            # Return early - user should wait for pod to stop before deleting
+            return {
+                "id": pod.id, 
+                "status": str(pod.status),
+                "message": "Pod is being stopped. Please wait for it to stop completely before deleting."
+            }
+        
+        # If pod is stopping, return error
+        if pod.status == PodStatus.stopping:
+            raise HTTPException(
+                status_code=400, 
+                detail="Pod is currently stopping. Please wait for it to stop completely before deleting."
+            )
+        
+        # For stopped/error pods, proceed with deletion
+        instance_id = pod.instance_id
+        
+        # Terminate AWS instance if it exists and is not already terminated
+        if instance_id:
+            try:
+                import boto3
+                from apps.api.app.config import settings
+                
+                ec2 = boto3.client("ec2", region_name=settings.AWS_REGION)
+                
+                # Check instance status
+                response = ec2.describe_instances(InstanceIds=[instance_id])
+                if response['Reservations']:
+                    instance = response['Reservations'][0]['Instances'][0]
+                    if instance['State']['Name'] not in ['terminated', 'shutting-down']:
+                        logger.info(f"Terminating instance {instance_id} for pod deletion")
+                        ec2.terminate_instances(InstanceIds=[instance_id])
+                        
+                        # Wait for termination to complete
+                        waiter = ec2.get_waiter("instance_terminated")
+                        waiter.wait(
+                            InstanceIds=[instance_id],
+                            WaiterConfig={'Delay': 5, 'MaxAttempts': 60}  # 5 minute timeout
+                        )
+                        logger.info(f"Instance {instance_id} terminated successfully")
+                    else:
+                        logger.info(f"Instance {instance_id} already terminated")
+                        
+            except Exception as e:
+                logger.warning(f"Failed to terminate instance {instance_id}: {e}")
+                # Continue with deletion even if AWS cleanup fails
+        
+        # Remove from database
+        session.delete(pod)
+        session.commit()
+        
+        logger.info(f"Pod {pod_id} deleted successfully")
+        return {
+            "id": pod_id,
+            "message": "Pod deleted successfully",
+            "instance_terminated": bool(instance_id)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete pod {pod_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete pod")
