@@ -162,14 +162,9 @@ API_PID=$!
 # Wait for API to be ready
 wait_for_service "FastAPI" $API_PORT
 
-# Start frontend
-log "🎨 Starting frontend..."
-cd "$PROJECT_ROOT/apps/web"
-npm run dev &
-FRONTEND_PID=$!
-
-# Wait for frontend to be ready
-wait_for_service "Frontend" 3000
+# Frontend is served by nginx proxy - no need to start directly
+log "🎨 Frontend will be served by nginx proxy..."
+FRONTEND_PID="nginx-proxy"
 
 # Display status
 log "${GREEN}🎉 GPUCloud Production System Started Successfully!${NC}"
@@ -182,10 +177,10 @@ echo "  🌐 FastAPI Server: ${GREEN}Running${NC} (PID: $API_PID)"
 echo "  🎨 Frontend: ${GREEN}Running${NC} (PID: $FRONTEND_PID)"
 echo ""
 echo "🌐 Access URLs:"
-echo "  Frontend Dashboard: http://184.105.5.179:3000"
-echo "  Backend API: http://184.105.5.179:$API_PORT"
-echo "  API Health: http://184.105.5.179:$API_PORT/v1/health"
-echo "  API Docs: http://184.105.5.179:$API_PORT/docs"
+echo "  Frontend Dashboard: http://184.105.5.179 (via nginx)"
+echo "  Backend API: http://184.105.5.179/v1/ (via nginx)"
+echo "  API Health: http://184.105.5.179/v1/health (via nginx)"
+echo "  API Docs: http://184.105.5.179/docs (via nginx)"
 echo ""
 echo "📋 Monitoring Commands:"
 echo "  Check system health: curl http://184.105.5.179:$API_PORT/v1/health"
@@ -213,12 +208,13 @@ while true; do
         API_PID=$!
     fi
     
-    if ! is_running "next dev"; then
-        log "${YELLOW}⚠️  Frontend died, restarting...${NC}"
-        cd "$PROJECT_ROOT/apps/web"
-        npm run dev &
-        FRONTEND_PID=$!
-    fi
+    # Frontend is served by nginx - no need to restart directly
+    # if ! is_running "next dev"; then
+    #     log "${YELLOW}⚠️  Frontend died, restarting...${NC}"
+    #     cd "$PROJECT_ROOT/apps/web"
+    #     npm run dev &
+    #     FRONTEND_PID=$!
+    # fi
     
     # Log health status
     if [ $((SECONDS % 300)) -eq 0 ]; then  # Every 5 minutes

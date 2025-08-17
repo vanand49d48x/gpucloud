@@ -143,23 +143,13 @@ start_nginx() {
 
 # Function to start frontend
 start_frontend() {
-    log "🎨 Starting frontend..."
+    log "🎨 Frontend served by nginx proxy..."
     
-    if ! is_port_listening $FRONTEND_PORT; then
-        cd "$PROJECT_ROOT/apps/web"
-        
-        # Use production frontend script with auto-restart
-        ./start_production.sh > /tmp/gpucloud_frontend.log 2>&1 &
-        FRONTEND_PID=$!
-        echo $FRONTEND_PID > /tmp/gpucloud_frontend.pid
-        
-        log "✅ Frontend started with auto-restart (PID: $FRONTEND_PID)"
-    else
-        log "✅ Frontend already running"
-    fi
+    # Frontend is served by nginx - no need to start directly
+    FRONTEND_PID="nginx-proxy"
+    echo $FRONTEND_PID > /tmp/gpucloud_frontend.pid
     
-    # Wait for frontend to be ready
-    wait_for_service "Frontend" $FRONTEND_PORT
+    log "✅ Frontend will be served by nginx proxy"
 }
 
 # Function to start health monitoring
@@ -231,10 +221,10 @@ start_all() {
     echo "  🔒 Nginx (SSL): ${GREEN}Running${NC}"
     echo ""
     echo "🌐 Access URLs:"
-    echo "  Frontend Dashboard: https://184.105.5.179"
-    echo "  Backend API: https://184.105.5.179/v1/"
-    echo "  API Health: https://184.105.5.179/v1/health"
-    echo "  API Docs: https://184.105.5.179/docs"
+    echo "  Frontend Dashboard: http://184.105.5.179 (via nginx)"
+    echo "  Backend API: http://184.105.5.179/v1/ (via nginx)"
+    echo "  API Health: http://184.105.5.179/v1/health (via nginx)"
+    echo "  API Docs: http://184.105.5.179/docs (via nginx)"
     echo ""
     echo "📋 Management Commands:"
     echo "  Status: ./gpucloud.sh status"
