@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     
     # AWS / infra
     AWS_REGION: str = "us-east-1"
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
     AWS_VPC_ID: str = ""
     AWS_SUBNET_ID: str = ""
     AWS_SECURITY_GROUP_ID: str = ""

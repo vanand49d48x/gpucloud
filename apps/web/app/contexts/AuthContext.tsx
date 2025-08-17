@@ -16,7 +16,7 @@ interface AuthContextType {
   loading: boolean;
 }
 
-const API_BASE = 'http://127.0.0.1:8080';
+const API_BASE = ''; // Use relative URLs, nginx will proxy to API backend
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 

@@ -140,10 +140,10 @@ print('Health monitoring started')
 " &
 HEALTH_PID=$!
 
-# Start RQ worker with enhanced monitoring
+# Start RQ worker with enhanced monitoring and timestamped logging
 log "👷 Starting enhanced RQ worker..."
 cd "$PROJECT_ROOT"
-python -m apps.api.workers &
+python -m apps.api.workers 2>&1 | while IFS= read -r line; do echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line"; done > /tmp/gpucloud_worker.log &
 WORKER_PID=$!
 
 # Wait for worker to be ready
@@ -153,10 +153,10 @@ if ! is_running "apps.api.workers"; then
     exit 1
 fi
 
-# Start FastAPI server
+# Start FastAPI server with timestamped logging
 log "🌐 Starting FastAPI server..."
 cd "$PROJECT_ROOT"
-uvicorn apps.api.app.main:app --host 0.0.0.0 --port $API_PORT &
+uvicorn apps.api.app.main:app --host 0.0.0.0 --port $API_PORT --access-log --log-level info 2>&1 | while IFS= read -r line; do echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line"; done > /tmp/gpucloud_api.log &
 API_PID=$!
 
 # Wait for API to be ready
@@ -202,14 +202,14 @@ while true; do
     if ! is_running "apps.api.workers"; then
         log "${YELLOW}⚠️  Worker died, restarting...${NC}"
         cd "$PROJECT_ROOT"
-        python -m apps.api.workers &
+        python -m apps.api.workers 2>&1 | while IFS= read -r line; do echo "[$(date '+%Y-%M-%d %H:%M:%S')] $line"; done > /tmp/gpucloud_worker.log &
         WORKER_PID=$!
     fi
     
     if ! is_running "uvicorn.*apps.api.app.main:app"; then
         log "${YELLOW}⚠️  API server died, restarting...${NC}"
         cd "$PROJECT_ROOT"
-        uvicorn apps.api.app.main:app --host 0.0.0.0 --port $API_PORT &
+        uvicorn apps.api.app.main:app --host 0.0.0.0 --port $API_PORT --access-log --log-level info 2>&1 | while IFS= read -r line; do echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line"; done > /tmp/gpucloud_api.log &
         API_PID=$!
     fi
     

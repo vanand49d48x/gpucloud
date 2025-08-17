@@ -1,8 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Play, Trash2, FileText, Eye, Plus, Search, Filter } from 'lucide-react';
+import { Play, Trash2, FileText, Eye, Plus, Search, Filter, Terminal, Globe } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import GPUCatalog from './GPUCatalog';
+import WebTerminal from './WebTerminal';
+import SSHConnectionGuide from './SSHConnectionGuide';
+import LogViewer from './LogViewer';
+import { clientLogger as logger } from '../utils/logger';
 
 interface Pod {
   id: number;
@@ -33,12 +38,17 @@ export default function PodManager() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [showDeployModal, setShowDeployModal] = useState(false);
+  const [showTerminalModal, setShowTerminalModal] = useState(false);
+  const [showSSHGuideModal, setShowSSHGuideModal] = useState(false);
+  const [showLogViewerModal, setShowLogViewerModal] = useState(false);
   const [selectedInstance, setSelectedInstance] = useState<CatalogItem | null>(null);
+  const [selectedPod, setSelectedPod] = useState<Pod | null>(null);
 
-  const API_BASE = 'http://127.0.0.1:8080';
+  const API_BASE = ''; // Use relative URLs, nginx will proxy to API backend
 
   // Fetch pods from your backend
   const fetchPods = async () => {
+    logger.info('Starting pods fetch', { hasToken: !!token, timestamp: new Date().toISOString() });
     if (!token) return;
     
     try {
@@ -48,12 +58,26 @@ export default function PodManager() {
         }
       });
       
+      logger.info('Pods API response received', { 
+        status: response.status, 
+        ok: response.ok,
+        timestamp: new Date().toISOString()
+      });
+      
       if (response.ok) {
         const data = await response.json();
+        logger.info('Pods data parsed successfully', { 
+          podCount: data.length,
+          timestamp: new Date().toISOString()
+        });
         setPods(data);
       }
     } catch (error) {
-      console.error('Error fetching pods:', error);
+      logger.error('Error fetching pods', { 
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        timestamp: new Date().toISOString()
+      });
       // Fallback to mock data for now
       setPods([
         {
@@ -93,6 +117,28 @@ export default function PodManager() {
           price_with_markup_usd: 0.03
         }
       ]);
+    }
+  };
+
+  // Update security group to allow SSH access
+  const updateSecurityGroup = async (instanceId: string, userIp: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/v1/pods/${selectedPod?.id}/security-group/update`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ user_ip: userIp })
+      });
+
+      if (response.ok) {
+        logger.info('Security group updated successfully', { instanceId, userIp });
+      } else {
+        logger.error('Failed to update security group', { instanceId, userIp, status: response.status });
+      }
+    } catch (error) {
+      logger.error('Error updating security group', { error, instanceId, userIp });
     }
   };
 
@@ -290,13 +336,29 @@ export default function PodManager() {
     <div className="space-y-6">
       {/* Action Bar */}
       <div className="flex items-center justify-between">
-        <button 
-          onClick={() => setShowDeployModal(true)}
-          className="btn-primary"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Deploy
-        </button>
+        <div className="flex items-center space-x-3">
+          <button 
+            onClick={() => {
+              logger.info('Deploy button clicked in PodManager', { timestamp: new Date().toISOString() });
+              setShowDeployModal(true);
+            }}
+            className="btn-primary"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Deploy
+          </button>
+          
+          <button 
+            onClick={() => {
+              logger.info('Log viewer button clicked', { timestamp: new Date().toISOString() });
+              setShowLogViewerModal(true);
+            }}
+            className="btn-secondary"
+          >
+            <FileText className="w-4 h-4 mr-2" />
+            View Logs
+          </button>
+        </div>
         
         <div className="flex items-center space-x-4">
           <div className="relative">
@@ -370,17 +432,17 @@ export default function PodManager() {
               {pod.status === 'running' ? (
                 <button 
                   onClick={() => stopPod(pod.id)}
-                  disabled={pod.status === 'stopping'}
-                  className={`btn-danger text-sm ${pod.status === 'stopping' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  disabled={false}
+                  className="btn-danger text-sm"
                 >
                   <Trash2 className="w-4 h-4 mr-2" />
-                  {pod.status === 'stopping' ? 'Stopping...' : 'Stop'}
+                  Stop
                 </button>
               ) : (
                 <button 
                   onClick={() => startPod(pod.id)}
-                  disabled={pod.status === 'starting' || pod.status === 'stopping' || !pod.instance_type}
-                  className={`btn-primary text-sm ${(pod.status === 'starting' || pod.status === 'stopping' || !pod.instance_type) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  disabled={pod.status === 'starting' || !pod.instance_type}
+                  className={`btn-primary text-sm ${(pod.status === 'starting' || !pod.instance_type) ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   <Play className="w-4 h-4 mr-2" />
                   {pod.status === 'starting' ? 'Starting...' : 'Start'}
@@ -394,6 +456,34 @@ export default function PodManager() {
                 <Eye className="w-4 h-4 mr-2" />
                 View
               </button>
+              
+              {/* Terminal and SSH Access Buttons */}
+              {pod.status === 'running' && pod.public_ip && (
+                <>
+                  <button
+                    onClick={() => {
+                      setSelectedPod(pod);
+                      setShowTerminalModal(true);
+                    }}
+                    className="btn-secondary text-sm bg-green-600 hover:bg-green-700"
+                    title="Open Web Terminal"
+                  >
+                    <Terminal className="w-4 h-4 mr-2" />
+                    Terminal
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedPod(pod);
+                      setShowSSHGuideModal(true);
+                    }}
+                    className="btn-secondary text-sm bg-blue-600 hover:bg-blue-700"
+                    title="SSH Connection Guide"
+                  >
+                    <Globe className="w-4 h-4 mr-2" />
+                    SSH
+                  </button>
+                </>
+              )}
             </div>
           </div>
         ))}
@@ -405,63 +495,59 @@ export default function PodManager() {
         )}
       </div>
 
-      {/* Deploy Modal */}
-      {showDeployModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-800 rounded-lg p-6 w-full max-w-2xl">
-            <h2 className="text-xl font-bold text-white mb-4">Deploy New Instance</h2>
-            
-            <div className="space-y-4 max-h-96 overflow-y-auto">
-              {catalog.map((item) => (
-                <div 
-                  key={item.id}
-                  className={`p-4 border rounded-lg cursor-pointer transition-colors ${
-                    selectedInstance?.id === item.id 
-                      ? 'border-purple-500 bg-purple-900/20' 
-                      : 'border-gray-700 hover:border-gray-600'
-                  }`}
-                  onClick={() => setSelectedInstance(item)}
-                >
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <h3 className="font-semibold text-white">{item.instance_type}</h3>
-                      <p className="text-sm text-gray-400">{item.category}</p>
-                      <p className="text-sm text-gray-400">
-                        {item.vcpus} vCPU, {item.memory_gb} GB RAM
-                        {item.gpu && `, ${item.gpu.gpu_count}x ${item.gpu.gpu_model}`}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-lg font-bold text-white">
-                        ${item.price_with_markup_usd}/hr
-                      </p>
-                      <p className="text-sm text-gray-400">
-                        ${(item.price_with_markup_usd / 60).toFixed(4)}/min
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-            
-            <div className="flex justify-end space-x-3 mt-6">
-              <button 
-                onClick={() => setShowDeployModal(false)}
-                className="btn-secondary"
-              >
-                Cancel
-              </button>
-              <button 
-                onClick={() => selectedInstance && launchPod(selectedInstance.id)}
-                disabled={!selectedInstance}
-                className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Deploy Instance
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* GPU Catalog Modal */}
+      <GPUCatalog
+        isOpen={showDeployModal}
+        onClose={() => {
+          logger.info('GPUCatalog modal closing', { timestamp: new Date().toISOString() });
+          setShowDeployModal(false);
+        }}
+        onDeploy={(instanceId) => {
+          logger.info('GPUCatalog onDeploy called', { instanceId, timestamp: new Date().toISOString() });
+          launchPod(instanceId);
+          setShowDeployModal(false);
+        }}
+      />
+
+      {/* Web Terminal Modal */}
+      {selectedPod && (
+                <WebTerminal 
+          podId={selectedPod.id}
+          instanceId={selectedPod.instance_id || ''}
+          publicIp={selectedPod.public_ip || ''}
+          instanceType={selectedPod.instance_type || ''}
+          isOpen={showTerminalModal}
+          onClose={() => {
+            setShowTerminalModal(false);
+            setSelectedPod(null);
+          }}
+          onSecurityGroupUpdate={updateSecurityGroup}
+          token={token || undefined}
+        />
       )}
+
+      {/* SSH Connection Guide Modal */}
+      {selectedPod && (
+        <SSHConnectionGuide
+          podId={selectedPod.id}
+          instanceId={selectedPod.instance_id || ''}
+          publicIp={selectedPod.public_ip || ''}
+          instanceType={selectedPod.instance_type || ''}
+          isOpen={showSSHGuideModal}
+          onClose={() => {
+            setShowSSHGuideModal(false);
+            setSelectedPod(null);
+          }}
+          onSecurityGroupUpdate={updateSecurityGroup}
+          token={token || undefined}
+        />
+      )}
+      
+      {/* Log Viewer Modal */}
+      <LogViewer
+        isOpen={showLogViewerModal}
+        onClose={() => setShowLogViewerModal(false)}
+      />
     </div>
   );
 }

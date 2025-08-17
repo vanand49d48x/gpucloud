@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apps.api.app import models  # Import models for Alembic
 from apps.api.app import db      # Import db for Alembic
-from apps.api.app.routers import auth, billing, pods, catalog
+from apps.api.app.routers import auth, billing, pods, catalog, terminal, logs
 
 app = FastAPI(title="GPUCloud API", version="0.1.0")
 
@@ -32,3 +32,5 @@ app.include_router(auth.router)
 app.include_router(billing.router)
 app.include_router(pods.router)
 app.include_router(catalog.router)
+app.include_router(terminal.router)
+app.include_router(logs.router)

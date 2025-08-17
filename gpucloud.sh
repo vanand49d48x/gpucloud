@@ -24,7 +24,7 @@ POSTGRES_PORT=5432
 SERVICE_NAME="gpucloud"
 API_SERVICE="uvicorn.*apps.api.app.main:app"
 WORKER_SERVICE="python.*apps.api.workers"
-FRONTEND_SERVICE="next dev"
+FRONTEND_SERVICE="next-server"
 HEALTH_SERVICE="python.*health_checker"
 REDIS_SERVICE="redis-server"
 POSTGRES_SERVICE="postgres"
@@ -95,8 +95,8 @@ start_api() {
         source "$VENV_PATH/bin/activate"
         export PYTHONPATH="$PROJECT_ROOT"
         
-        # Start API server in background
-        uvicorn apps.api.app.main:app --host 0.0.0.0 --port $API_PORT > /tmp/gpucloud_api.log 2>&1 &
+        # Start API server in background with timestamped logging
+        uvicorn apps.api.app.main:app --host 0.0.0.0 --port $API_PORT --access-log --log-level info 2>&1 | while IFS= read -r line; do echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line"; done > /tmp/gpucloud_api.log &
         API_PID=$!
         echo $API_PID > /tmp/gpucloud_api.pid
         
@@ -118,8 +118,8 @@ start_worker() {
         source "$VENV_PATH/bin/activate"
         export PYTHONPATH="$PROJECT_ROOT"
         
-        # Start worker in background
-        python -m apps.api.workers > /tmp/gpucloud_worker.log 2>&1 &
+        # Start worker in background with timestamped logging
+        python -m apps.api.workers 2>&1 | while IFS= read -r line; do echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line"; done > /tmp/gpucloud_worker.log &
         WORKER_PID=$!
         echo $WORKER_PID > /tmp/gpucloud_worker.pid
         
@@ -145,15 +145,15 @@ start_nginx() {
 start_frontend() {
     log "🎨 Starting frontend..."
     
-    if ! is_running "$FRONTEND_SERVICE"; then
+    if ! is_port_listening $FRONTEND_PORT; then
         cd "$PROJECT_ROOT/apps/web"
         
-        # Start frontend in background
-        npm run dev > /tmp/gpucloud_frontend.log 2>&1 &
+        # Use production frontend script with auto-restart
+        ./start_production.sh > /tmp/gpucloud_frontend.log 2>&1 &
         FRONTEND_PID=$!
         echo $FRONTEND_PID > /tmp/gpucloud_frontend.pid
         
-        log "✅ Frontend started (PID: $FRONTEND_PID)"
+        log "✅ Frontend started with auto-restart (PID: $FRONTEND_PID)"
     else
         log "✅ Frontend already running"
     fi
@@ -348,7 +348,7 @@ show_status() {
     fi
     
     echo "🎨 Frontend:"
-    if is_running "$FRONTEND_SERVICE"; then
+    if is_port_listening $FRONTEND_PORT; then
         echo "  ${GREEN}✅ Running${NC}"
     else
         echo "  ${RED}❌ Stopped${NC}"

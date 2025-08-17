@@ -3,6 +3,7 @@
 import { useAuth } from './contexts/AuthContext';
 import Dashboard from './components/Dashboard';
 import Login from './components/Login';
+import ErrorBoundary from './components/ErrorBoundary';
 
 export default function Home() {
   const { user, loading } = useAuth();
@@ -19,5 +20,9 @@ export default function Home() {
     return <Login />;
   }
 
-  return <Dashboard />;
+  return (
+    <ErrorBoundary>
+      <Dashboard />
+    </ErrorBoundary>
+  );
 }
