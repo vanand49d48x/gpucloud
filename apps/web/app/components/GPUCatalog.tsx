@@ -39,7 +39,7 @@ export default function GPUCatalog({ isOpen, onClose, onDeploy }: GPUCatalogProp
   const fetchCatalog = async () => {
     logger.info('Starting catalog fetch', { timestamp: new Date().toISOString() });
     try {
-      const response = await fetch('http://127.0.0.1:8080/v1/catalog/aws');
+              const response = await fetch('/v1/catalog/aws');
       logger.info('Catalog API response received', { 
         status: response.status, 
         ok: response.ok,

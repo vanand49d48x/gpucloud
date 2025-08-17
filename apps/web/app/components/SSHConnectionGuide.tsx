@@ -48,7 +48,7 @@ export default function SSHConnectionGuide({
   const fetchSSHInfo = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`http://127.0.0.1:8080/v1/pods/${podId}/ssh-info`, {
+              const response = await fetch(`/v1/pods/${podId}/ssh-info`, {
         headers: {
           'Authorization': `Bearer ${token || localStorage.getItem('token')}`
         }

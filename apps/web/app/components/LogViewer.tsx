@@ -63,7 +63,7 @@ export default function LogViewer({ isOpen, onClose, appName }: LogViewerProps) 
     
     setIsLoading(true);
     try {
-      let endpoint = 'http://127.0.0.1:8080/v1/logs';
+              let endpoint = '/v1/logs';
       if (appName) {
         endpoint += `/${appName}`;
       }

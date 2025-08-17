@@ -75,14 +75,50 @@ def provision_pod(pod_id: int, instance_type: str = "t3.micro"):
         if not pod:
             return
         
-        # Check for existing instance (prevent duplicates)
-        if pod.instance_id:
-            log.warning(f"[provision] Pod {pod_id} already has instance {pod.instance_id}, skipping")
+        # Check for existing running instance (prevent duplicates)
+        # But allow restarting stopped pods that have instance_id
+        if pod.instance_id and pod.status == PodStatus.running:
+            log.warning(f"[provision] Pod {pod_id} already has running instance {pod.instance_id}, skipping")
             return
         
         ec2 = boto3.client("ec2", region_name=settings.AWS_REGION)
         
-        # Launch instance with retry logic
+        # If we have an existing instance_id, try to start it instead of creating new one
+        if pod.instance_id:
+            log.info(f"[provision] Restarting existing instance {pod.instance_id} for pod {pod_id}")
+            try:
+                # Start the existing stopped instance
+                ec2.start_instances(InstanceIds=[pod.instance_id])
+                
+                # Wait for instance to be running
+                waiter = ec2.get_waiter("instance_running")
+                waiter.wait(
+                    InstanceIds=[pod.instance_id],
+                    WaiterConfig={'Delay': 10, 'MaxAttempts': 30}
+                )
+                
+                # Get updated instance details
+                desc = ec2.describe_instances(InstanceIds=[pod.instance_id])
+                inst = desc["Reservations"][0]["Instances"][0]
+                public_ip = inst.get("PublicIpAddress")
+                
+                if not public_ip:
+                    log.warning("[provision] restarted instance has no PublicIpAddress")
+                
+                # Update status to running
+                _update(pod_id, public_ip=public_ip, status=PodStatus.running)
+                log.info(f"[provision] restarted pod_id={pod_id} ip={public_ip} id={pod.instance_id}")
+                
+                # Start metering in background
+                _start_metering(pod_id)
+                return
+                
+            except Exception as e:
+                log.error(f"[provision] Failed to restart instance {pod.instance_id}: {e}")
+                # Fall back to creating new instance
+                log.info(f"[provision] Falling back to creating new instance for pod {pod_id}")
+        
+        # Launch new instance with retry logic
         instance_id = None
         for attempt in range(MAX_RETRIES):
             try:
@@ -223,29 +259,29 @@ def teardown_pod(pod_id: int):
             instance_id = pod.instance_id
             instance_type = pod.instance_type
         
-        # Terminate AWS instance if it exists
+        # Stop AWS instance if it exists (don't terminate for restart capability)
         if instance_id:
             ec2 = boto3.client("ec2", region_name=settings.AWS_REGION)
             try:
-                log.info(f"[teardown] Terminating instance {instance_id}")
-                ec2.terminate_instances(InstanceIds=[instance_id])
+                log.info(f"[teardown] Stopping instance {instance_id} (preserving for restart)")
+                ec2.stop_instances(InstanceIds=[instance_id])
                 
-                # Wait for termination to complete
-                waiter = ec2.get_waiter("instance_terminated")
+                # Wait for instance to be stopped
+                waiter = ec2.get_waiter("instance_stopped")
                 waiter.wait(
                     InstanceIds=[instance_id],
                     WaiterConfig={'Delay': 5, 'MaxAttempts': 60}  # 5 minute timeout
                 )
                 
-                log.info(f"[teardown] Instance {instance_id} terminated successfully")
+                log.info(f"[teardown] Instance {instance_id} stopped successfully (can be restarted)")
                 
             except ClientError as ce:
-                log.warning(f"[teardown] terminate_instances: {ce}")
+                log.warning(f"[teardown] stop_instances: {ce}")
             except Exception as e:
-                log.error(f"[teardown] Failed to terminate instance: {e}")
+                log.error(f"[teardown] Failed to stop instance: {e}")
         
-        # Update status to stopped
-        _update(pod_id, status=PodStatus.stopped, instance_id=None)
+        # Update status to stopped but preserve instance_id for restart capability
+        _update(pod_id, status=PodStatus.stopped, public_ip=None)
         log.info(f"[teardown] done pod_id={pod_id}")
         
     except Exception as e:

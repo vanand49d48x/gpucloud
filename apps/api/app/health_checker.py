@@ -145,18 +145,19 @@ class HealthChecker:
             self._reset_pod_to_stopped(pod.id)
     
     def _reset_pod_to_stopped(self, pod_id: int):
-        """Reset a pod to stopped status"""
+        """Reset a pod to stopped status but preserve instance_id for restart capability"""
         try:
             with Session(engine) as session:
                 pod = session.get(Pod, pod_id)
                 if pod:
                     pod.status = PodStatus.stopped
-                    pod.instance_id = None
+                    # Preserve instance_id and instance_type for restart capability
+                    # Only clear public_ip as it changes on restart
                     pod.public_ip = None
                     pod.updated_at = datetime.utcnow()
                     session.add(pod)
                     session.commit()
-                    logger.info(f"Reset pod {pod_id} to stopped status")
+                    logger.info(f"Reset pod {pod_id} to stopped status (preserving instance_id)")
                     
         except Exception as e:
             logger.error(f"Failed to reset pod {pod_id}: {e}")

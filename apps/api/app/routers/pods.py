@@ -155,15 +155,16 @@ def force_reset_pod(pod_id: int, session: Session = Depends(get_session), user=D
                 detail=f"Cannot reset pod in {pod.status} status"
             )
         
-        # Force reset to stopped
+        # Force reset to stopped but preserve instance_id for restart capability
         pod.status = PodStatus.stopped
-        pod.instance_id = None
+        # Preserve instance_id and instance_type for restart capability
+        # Only clear public_ip as it changes on restart
         pod.public_ip = None
         session.add(pod)
         session.commit()
         
-        logger.warning(f"Force reset pod {pod_id} from {pod.status} to stopped by user {user.id}")
-        return {"id": pod.id, "status": "stopped", "message": "Pod force reset to stopped status"}
+        logger.warning(f"Force reset pod {pod_id} from {pod.status} to stopped by user {user.id} (preserving instance_id)")
+        return {"id": pod.id, "status": "stopped", "message": "Pod force reset to stopped status (instance_id preserved for restart)"}
         
     except HTTPException:
         raise
