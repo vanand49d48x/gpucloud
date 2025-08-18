@@ -338,6 +338,15 @@ export default function PodManager() {
     }
     
     try {
+      // Mark pod as deleting to prevent further actions
+      setPods(prevPods => 
+        prevPods.map(pod => 
+          pod.id === podId 
+            ? { ...pod, status: 'deleting' }
+            : pod
+        )
+      );
+      
       const response = await fetch(`${API_BASE}/v1/pods/${podId}`, {
         method: 'DELETE',
         headers: {
@@ -349,10 +358,39 @@ export default function PodManager() {
         const result = await response.json();
         console.log('Pod deleted:', result);
         
-        if (result.message.includes('being stopped')) {
-          // Pod is being stopped, show message and refresh
+        if (result.message.includes('being stopped') || result.message.includes('being terminated')) {
+          // Pod is being stopped/terminated, keep it in "deleting" state
           alert(result.message);
-          fetchPods();
+
+          // Start a focused poll to remove the pod once backend deletion completes
+          const startTime = Date.now();
+          const pollIntervalMs = 3000;
+          const timeoutMs = 5 * 60 * 1000; // 5 minutes max
+          const intervalId = setInterval(async () => {
+            try {
+              const listResp = await fetch(`${API_BASE}/v1/pods`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+              });
+              if (listResp.ok) {
+                const podsList: Pod[] = await listResp.json();
+                const stillExists = podsList.some(p => p.id === podId);
+                if (!stillExists) {
+                  // Remove from local state and stop polling
+                  setPods(prev => prev.filter(p => p.id !== podId));
+                  clearInterval(intervalId);
+                  return;
+                }
+              }
+            } catch (_) {
+              // ignore transient errors
+            }
+            if (Date.now() - startTime > timeoutMs) {
+              clearInterval(intervalId);
+            }
+          }, pollIntervalMs);
+
+          // Also trigger a background refresh shortly to reflect server state sooner
+          setTimeout(() => fetchPods(), 3000);
         } else {
           // Pod was deleted successfully, remove from local state
           setPods(prevPods => prevPods.filter(pod => pod.id !== podId));
@@ -361,10 +399,30 @@ export default function PodManager() {
       } else {
         const error = await response.json();
         console.error('Delete failed:', error);
+        
+        // Revert status on error
+        setPods(prevPods => 
+          prevPods.map(p => 
+            p.id === podId 
+              ? { ...p, status: p.status === 'deleting' ? 'stopped' : p.status }
+              : p
+          )
+        );
+        
         alert(`Delete failed: ${error.detail}`);
       }
     } catch (error) {
       console.error('Error deleting pod:', error);
+      
+      // Revert status on error
+      setPods(prevPods => 
+        prevPods.map(p => 
+          p.id === podId 
+            ? { ...p, status: p.status === 'deleting' ? 'stopped' : p.status }
+            : p
+        )
+      );
+      
       alert('Error deleting pod');
     }
   };
@@ -386,7 +444,7 @@ export default function PodManager() {
     }, 5000); // 5 seconds for more responsive updates
     
     return () => clearInterval(interval);
-  }, [token]);
+  }, [token, pods]);
 
   const filteredPods = pods.filter(pod =>
     pod.instance_id?.includes(searchTerm) ||
@@ -401,6 +459,7 @@ export default function PodManager() {
       case 'pending': return 'text-blue-400';
       case 'starting': return 'text-blue-400';
       case 'stopping': return 'text-orange-400';
+      case 'deleting': return 'text-red-400';
       case 'error': return 'text-red-400';
       default: return 'text-gray-400';
     }
@@ -414,6 +473,7 @@ export default function PodManager() {
       case 'pending': return <div className="w-3 h-3 bg-blue-400 rounded-full animate-pulse" />;
       case 'starting': return <div className="w-3 h-3 bg-blue-400 rounded-full animate-pulse" />;
       case 'stopping': return <div className="w-3 h-3 bg-orange-400 rounded-full animate-pulse" />;
+      case 'deleting': return <div className="w-3 h-3 bg-red-400 rounded-full animate-pulse" />;
       case 'error': return <div className="w-3 h-3 bg-red-400 rounded-full" />;
       default: return <div className="w-3 h-3 bg-gray-400 rounded-full" />;
     }
@@ -555,6 +615,13 @@ export default function PodManager() {
                 )}
 
                 {/* Status Indicators */}
+                {pod.status === 'pending' && (
+                  <span className="text-blue-500 text-sm font-medium flex items-center">
+                    <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                    Deploying...
+                  </span>
+                )}
+                
                 {pod.status === 'starting' && (
                   <span className="text-blue-500 text-sm font-medium flex items-center">
                     <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
@@ -569,25 +636,34 @@ export default function PodManager() {
                   </span>
                 )}
                 
+                {pod.status === 'deleting' && (
+                  <span className="text-red-500 text-sm font-medium flex items-center">
+                    <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                    Deleting...
+                  </span>
+                )}
+                
                 {pod.status === 'error' && (
                   <span className="text-red-500 text-sm font-medium">
                     ⚠️ Error - Check logs
                   </span>
                 )}
 
-              {/* Delete button - disabled when starting or stopping */}
+              {/* Delete button - disabled when pending, starting, stopping, or deleting */}
               <button 
                 onClick={() => deletePod(pod.id)}
-                disabled={pod.status === 'starting' || pod.status === 'stopping'}
-                className={`btn-danger text-sm ${(pod.status === 'starting' || pod.status === 'stopping') ? 'opacity-50 cursor-not-allowed' : ''}`}
+                disabled={pod.status === 'pending' || pod.status === 'starting' || pod.status === 'stopping' || pod.status === 'deleting'}
+                className={`btn-danger text-sm ${(pod.status === 'pending' || pod.status === 'starting' || pod.status === 'stopping' || pod.status === 'deleting') ? 'opacity-50 cursor-not-allowed' : ''}`}
                 title={
+                  pod.status === 'pending' ? 'Pod is being deployed, wait before deleting' : 
                   pod.status === 'starting' ? 'Pod is starting, wait before deleting' : 
                   pod.status === 'stopping' ? 'Pod is stopping, wait before deleting' : 
+                  pod.status === 'deleting' ? 'Pod is being deleted' : 
                   'Delete pod permanently'
                 }
               >
                 <Trash2 className="w-4 h-4 mr-2" />
-                Delete
+                {pod.status === 'deleting' ? 'Deleting...' : 'Delete'}
               </button>
               
               <button className="btn-secondary text-sm">
