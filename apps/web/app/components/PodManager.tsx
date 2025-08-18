@@ -495,6 +495,7 @@ export default function PodManager() {
           <button 
             onClick={() => setShowDeployModal(true)}
             className="btn-primary"
+            title="Deploy a new GPU instance"
           >
             <Plus className="w-4 h-4 mr-2" />
             Deploy
@@ -522,7 +523,10 @@ export default function PodManager() {
             />
           </div>
           
-          <button className="btn-secondary">
+          <button 
+            className="btn-secondary"
+            title="Filter pods by status or type"
+          >
             <Filter className="w-4 h-4" />
           </button>
         </div>
@@ -584,6 +588,7 @@ export default function PodManager() {
                   <button
                     onClick={() => stopPod(pod.id)}
                     className="btn-danger text-sm"
+                    title="Stop the pod (preserves instance for restart)"
                   >
                     <Square className="w-4 h-4 mr-2" />
                     Stop
@@ -596,6 +601,7 @@ export default function PodManager() {
                     onClick={() => startPod(pod.id)}
                     disabled={!pod.instance_type}
                     className={`btn-primary text-sm ${!pod.instance_type ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    title={!pod.instance_type ? 'Legacy pod cannot be restarted' : 'Start the stopped pod'}
                   >
                     <Play className="w-4 h-4 mr-2" />
                     Start
@@ -666,13 +672,16 @@ export default function PodManager() {
                 {pod.status === 'deleting' ? 'Deleting...' : 'Delete'}
               </button>
               
-              <button className="btn-secondary text-sm">
+              <button 
+                onClick={() => {
+                  setSelectedPod(pod);
+                  setShowLogViewerModal(true);
+                }}
+                className="btn-secondary text-sm"
+                title="View pod activity logs"
+              >
                 <FileText className="w-4 h-4 mr-2" />
                 Logs
-              </button>
-              <button className="btn-secondary text-sm">
-                <Eye className="w-4 h-4 mr-2" />
-                View
               </button>
               
               {/* Terminal and SSH Access Buttons */}
@@ -684,7 +693,7 @@ export default function PodManager() {
                       setShowTerminalModal(true);
                     }}
                     className="btn-secondary text-sm bg-green-600 hover:bg-green-700"
-                    title="Open Web Terminal"
+                    title="Open Web Terminal for direct pod access"
                   >
                     <Terminal className="w-4 h-4 mr-2" />
                     Terminal
@@ -695,7 +704,7 @@ export default function PodManager() {
                       setShowSSHGuideModal(true);
                     }}
                     className="btn-secondary text-sm bg-blue-600 hover:bg-blue-700"
-                    title="SSH Connection Guide"
+                    title="Get SSH connection details and guide"
                   >
                     <Globe className="w-4 h-4 mr-2" />
                     SSH
@@ -765,6 +774,9 @@ export default function PodManager() {
       <LogViewer
         isOpen={showLogViewerModal}
         onClose={() => setShowLogViewerModal(false)}
+        appName={selectedPod ? `Pod ${selectedPod.id}` : undefined}
+        podId={selectedPod?.id}
+        token={token || undefined}
       />
     </div>
   );

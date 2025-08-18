@@ -8,6 +8,8 @@ from apps.api.app.templates import TEMPLATES
 from apps.api.app.queue import q
 from apps.api.app.health_checker import health_checker
 import logging
+from datetime import datetime
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["pods"])
@@ -376,3 +378,152 @@ def delete_pod(pod_id: int, session: Session = Depends(get_session), user=Depend
         except:
             pass
         raise HTTPException(status_code=500, detail=f"Failed to delete pod: {str(e)}")
+
+# Pod Activity Log Models
+class PodActivityLog(BaseModel):
+    id: int
+    pod_id: int
+    action: str
+    status: str
+    message: str
+    timestamp: str
+    instance_id: Optional[str] = None
+    instance_type: Optional[str] = None
+    public_ip: Optional[str] = None
+    user_id: int
+
+@router.get("/pods/{pod_id}/activity-logs")
+def get_pod_activity_logs(
+    pod_id: int, 
+    session: Session = Depends(get_session), 
+    user=Depends(current_user),
+    limit: int = 100
+):
+    """Get activity logs for a specific pod"""
+    try:
+        # Verify pod belongs to user
+        pod = session.get(Pod, pod_id)
+        if not pod or pod.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Pod not found")
+        
+        # Generate activity logs based on pod history and current state
+        activity_logs = []
+        
+        # Pod creation
+        if pod.created_at:
+            activity_logs.append(PodActivityLog(
+                id=len(activity_logs) + 1,
+                pod_id=pod.id,
+                action="created",
+                status="pending",
+                message="Pod deployment initiated",
+                timestamp=pod.created_at.isoformat(),
+                instance_type=pod.instance_type,
+                user_id=user.id
+            ))
+        
+        # Status changes and updates
+        if pod.updated_at and pod.updated_at != pod.created_at:
+            activity_logs.append(PodActivityLog(
+                id=len(activity_logs) + 1,
+                pod_id=pod.id,
+                action="updated",
+                status=str(pod.status),
+                message=f"Pod status changed to {pod.status}",
+                timestamp=pod.updated_at.isoformat(),
+                instance_id=pod.instance_id,
+                instance_type=pod.instance_type,
+                public_ip=pod.public_ip,
+                user_id=user.id
+            ))
+        
+        # Instance provisioning
+        if pod.instance_id:
+            activity_logs.append(PodActivityLog(
+                id=len(activity_logs) + 1,
+                pod_id=pod.id,
+                action="provisioned",
+                status="running",
+                message=f"AWS instance {pod.instance_id} provisioned",
+                timestamp=pod.updated_at.isoformat() if pod.updated_at else pod.created_at.isoformat(),
+                instance_id=pod.instance_id,
+                instance_type=pod.instance_type,
+                public_ip=pod.public_ip,
+                user_id=user.id
+            ))
+        
+        # IP assignment
+        if pod.public_ip:
+            activity_logs.append(PodActivityLog(
+                id=len(activity_logs) + 1,
+                pod_id=pod.id,
+                action="ip_assigned",
+                status="running",
+                message=f"Public IP {pod.public_ip} assigned",
+                timestamp=pod.updated_at.isoformat() if pod.updated_at else pod.created_at.isoformat(),
+                instance_id=pod.instance_id,
+                instance_type=pod.instance_type,
+                public_ip=pod.public_ip,
+                user_id=user.id
+            ))
+        
+        # Current status
+        current_time = datetime.now().isoformat()
+        if pod.status == "running":
+            activity_logs.append(PodActivityLog(
+                id=len(activity_logs) + 1,
+                pod_id=pod.id,
+                action="status_check",
+                status="running",
+                message=f"Pod is currently running on {pod.instance_type}",
+                timestamp=current_time,
+                instance_id=pod.instance_id,
+                instance_type=pod.instance_type,
+                public_ip=pod.public_ip,
+                user_id=user.id
+            ))
+        elif pod.status == "stopped":
+            activity_logs.append(PodActivityLog(
+                id=len(activity_logs) + 1,
+                pod_id=pod.id,
+                action="status_check",
+                status="stopped",
+                message=f"Pod is currently stopped (instance {pod.instance_id} preserved)",
+                timestamp=current_time,
+                instance_id=pod.instance_id,
+                instance_type=pod.instance_type,
+                user_id=user.id
+            ))
+        elif pod.status == "error":
+            activity_logs.append(PodActivityLog(
+                id=len(activity_logs) + 1,
+                pod_id=pod.id,
+                action="status_check",
+                status="error",
+                message="Pod encountered an error during operation",
+                timestamp=current_time,
+                instance_id=pod.instance_id,
+                instance_type=pod.instance_type,
+                user_id=user.id
+            ))
+        
+        # Sort by timestamp (newest first) and limit results
+        activity_logs.sort(key=lambda x: x.timestamp, reverse=True)
+        activity_logs = activity_logs[:limit]
+        
+        return {
+            "pod_id": pod_id,
+            "pod_status": str(pod.status),
+            "instance_id": pod.instance_id,
+            "instance_type": pod.instance_type,
+            "public_ip": pod.public_ip,
+            "activity_logs": [log.dict() for log in activity_logs],
+            "total_logs": len(activity_logs),
+            "timestamp": current_time
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get activity logs for pod {pod_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get pod activity logs")

@@ -17,9 +17,11 @@ interface LogViewerProps {
   isOpen: boolean;
   onClose: () => void;
   appName?: string; // Specific app to show logs for
+  podId?: number; // Specific pod ID to show logs for
+  token?: string; // Authentication token
 }
 
-export default function LogViewer({ isOpen, onClose, appName }: LogViewerProps) {
+export default function LogViewer({ isOpen, onClose, appName, podId, token }: LogViewerProps) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [filteredLogs, setFilteredLogs] = useState<LogEntry[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -63,16 +65,47 @@ export default function LogViewer({ isOpen, onClose, appName }: LogViewerProps) 
     
     setIsLoading(true);
     try {
-              let endpoint = '/v1/logs';
-      if (appName) {
+      let endpoint = '/v1/logs';
+      
+      // If we have a podId, fetch pod-specific activity logs
+      if (podId) {
+        endpoint = `/v1/pods/${podId}/activity-logs`;
+      } else if (appName) {
         endpoint += `/${appName}`;
       }
       
-      const response = await fetch(endpoint);
+      const headers: HeadersInit = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      
+      const response = await fetch(endpoint, { headers });
       if (response.ok) {
         const data = await response.json();
-        setLogs(data.logs || []);
-        logger.info('Logs fetched successfully', { count: data.logs?.length || 0 });
+        
+        if (podId && data.activity_logs) {
+          // Handle pod activity logs
+          const podLogs = data.activity_logs.map((log: any) => ({
+            timestamp: log.timestamp,
+            level: 'INFO',
+            message: log.message,
+            data: {
+              action: log.action,
+              status: log.status,
+              instance_id: log.instance_id,
+              instance_type: log.instance_type,
+              public_ip: log.public_ip
+            },
+            app: `Pod ${podId}`,
+            source: 'pod-activity'
+          }));
+          setLogs(podLogs);
+          logger.info('Pod activity logs fetched successfully', { count: podLogs.length, podId });
+        } else {
+          // Handle regular logs
+          setLogs(data.logs || []);
+          logger.info('Logs fetched successfully', { count: data.logs?.length || 0 });
+        }
       } else {
         logger.warn('Failed to fetch logs from backend, using local logs');
         // Fallback to local logs
@@ -156,7 +189,7 @@ export default function LogViewer({ isOpen, onClose, appName }: LogViewerProps) 
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `logs-${appName || 'all'}-${new Date().toISOString()}.txt`;
+    a.download = `logs-${podId ? `pod-${podId}` : appName || 'all'}-${new Date().toISOString()}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -184,7 +217,7 @@ export default function LogViewer({ isOpen, onClose, appName }: LogViewerProps) 
             <FileText className="w-6 h-6 text-blue-400" />
             <div>
               <h2 className="text-lg font-semibold text-white">
-                Log Viewer {appName && `- ${appName}`}
+                {podId ? `Pod ${podId} Activity Logs` : `Log Viewer ${appName ? `- ${appName}` : ''}`}
               </h2>
               <p className="text-sm text-gray-400">
                 {filteredLogs.length} of {logs.length} logs • Auto-refresh: {autoRefresh ? 'ON' : 'OFF'}
