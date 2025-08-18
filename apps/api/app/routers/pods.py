@@ -82,9 +82,9 @@ def stop_pod(pod_id: int, session: Session = Depends(get_session), user=Depends(
         # Preserve instance_type before stopping (for restart capability)
         instance_type = pod.instance_type
         
-        # enqueue teardown by string
-        job = q.enqueue("apps.api.workers.provisioner.teardown_pod", pod.id)
-        logger.info(f"Enqueued stop job {job.id} for pod {pod.id}")
+        # enqueue stop (pause instance, do not terminate)
+        job = q.enqueue("apps.api.workers.provisioner.stop_pod", pod.id)
+        logger.info(f"Enqueued stop job {job.id} for pod {pod.id} (stop, not terminate)")
         
         pod.status = PodStatus.stopping
         session.add(pod); session.commit()
@@ -107,13 +107,6 @@ def start_pod(pod_id: int, session: Session = Depends(get_session), user=Depends
             return {"id": pod.id, "status": pod.status}
         
         if pod.status == PodStatus.stopped:
-            # Check if we have instance_type to restart
-            if not pod.instance_type:
-                raise HTTPException(
-                    status_code=400, 
-                    detail="Cannot restart pod: instance type not available. Please deploy a new pod."
-                )
-            
             # Credit check: require at least 1 minute worth
             min_needed = max(1, round(pod.hourly_rate_cents / 60))
             credits = session.query(Credits).filter(Credits.user_id == user.id).first()
@@ -122,11 +115,21 @@ def start_pod(pod_id: int, session: Session = Depends(get_session), user=Depends
                     status_code=402, 
                     detail=f"Insufficient credits. Need at least {min_needed} cents, have {credits.balance_cents if credits else 0}"
                 )
-            
-            # Enqueue provisioning job with the same instance type
-            job = q.enqueue("apps.api.workers.provisioner.provision_pod", pod.id, pod.instance_type)
-            logger.info(f"Enqueued restart job {job.id} for pod {pod.id}")
-            
+
+            # If we have a preserved instance_id, start the existing instance (preferred)
+            if pod.instance_id:
+                job = q.enqueue("apps.api.workers.provisioner.start_stopped_pod", pod.id)
+                logger.info(f"Enqueued start-existing job {job.id} for pod {pod.id} (instance {pod.instance_id})")
+            else:
+                # Fallback: no instance preserved, provision new using stored instance_type
+                if not pod.instance_type:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot restart pod: instance type not available. Please deploy a new pod."
+                    )
+                job = q.enqueue("apps.api.workers.provisioner.provision_pod", pod.id, pod.instance_type)
+                logger.info(f"Enqueued restart-new job {job.id} for pod {pod.id}")
+
             pod.status = PodStatus.starting
             session.add(pod); session.commit()
             return {"id": pod.id, "status": str(pod.status)}

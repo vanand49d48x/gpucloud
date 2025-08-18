@@ -66,6 +66,81 @@ def _check_job_timeout(pod_id: int, start_time: datetime) -> bool:
         return True
     return False
 
+def start_stopped_pod(pod_id: int):
+    """Start a stopped pod by starting the existing EC2 instance"""
+    print(f"DEBUG: Starting stopped pod {pod_id}")
+    
+    with Session(engine) as db:
+        try:
+            # Get pod from database
+            pod = db.query(Pod).filter(Pod.id == pod_id).first()
+            
+            if not pod:
+                logger.error(f"Pod {pod_id} not found in database")
+                return
+            
+            if not pod.instance_id:
+                logger.error(f"Pod {pod_id} has no instance_id, cannot start")
+                return
+
+            # Update status to starting
+            pod.status = 'starting'
+            db.commit()
+            
+            logger.info(f"[start_stopped] start pod_id={pod_id} instance_id={pod.instance_id}")
+            
+            ec2 = boto3.client("ec2", region_name=settings.AWS_REGION,
+                              aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                              aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY)
+
+            # Start the existing stopped EC2 instance
+            print(f"DEBUG: Starting stopped instance {pod.instance_id}")
+            ec2.start_instances(InstanceIds=[pod.instance_id])
+            
+            # Wait for instance to be running
+            print(f"DEBUG: Waiting for instance {pod.instance_id} to be running...")
+            waiter = ec2.get_waiter("instance_running")
+            waiter.wait(InstanceIds=[pod.instance_id])
+
+            # Get updated instance details
+            print(f"DEBUG: Instance {pod.instance_id} is now running, getting details...")
+            desc = ec2.describe_instances(InstanceIds=[pod.instance_id])
+            inst = desc["Reservations"][0]["Instances"][0]
+            public_ip = inst.get("PublicIpAddress")
+
+            if not public_ip:
+                print(f"DEBUG: [start_stopped] instance has no PublicIpAddress")
+            else:
+                print(f"DEBUG: Got public IP: {public_ip}")
+
+            # Update pod with new public IP and set to running
+            pod.public_ip = public_ip
+            pod.status = 'running'
+            db.commit()
+            
+            print(f"DEBUG: [start_stopped] running pod_id={pod_id} ip={public_ip} id={pod.instance_id}")
+            logger.info(f"Pod {pod_id} started successfully (existing instance {pod.instance_id})")
+
+            # Start metering in background
+            _start_metering(pod_id)
+            
+        except Exception as e:
+            print(f"DEBUG: Error starting stopped pod {pod_id}: {e}")
+            print(f"DEBUG: Exception type: {type(e).__name__}")
+            import traceback
+            print(f"DEBUG: Full traceback: {traceback.format_exc()}")
+            # Set status to error
+            try:
+                pod.status = 'error'
+                db.commit()
+            except:
+                # If pod variable doesn't exist, fetch it again
+                pod = db.query(Pod).filter(Pod.id == pod_id).first()
+                if pod:
+                    pod.status = 'error'
+                    db.commit()
+            raise
+
 def provision_pod(pod_id: int, instance_type: str = "t3.micro"):
     """Provision a pod with enhanced error handling"""
     print(f"DEBUG: Starting pod provision for pod {pod_id}")
@@ -80,11 +155,59 @@ def provision_pod(pod_id: int, instance_type: str = "t3.micro"):
                 logger.error(f"Pod {pod_id} not found in database")
                 return
 
+            # Check if this is a restart of a stopped pod with existing instance
+            # Note: API may set status to 'starting' before the worker runs. If we still
+            # have an instance_id, treat it as a restart of a previously stopped instance.
+            if pod.instance_id and (pod.status == PodStatus.stopped or pod.status == PodStatus.starting):
+                print(f"DEBUG: Pod {pod_id} has existing instance {pod.instance_id}, starting stopped instance")
+                
+                # Update status to starting
+                pod.status = PodStatus.starting
+                db.commit()
+                
+                logger.info(f"[start_stopped] start pod_id={pod_id} instance_id={pod.instance_id}")
+                
+                ec2 = boto3.client("ec2", region_name=settings.AWS_REGION,
+                                  aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                                  aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY)
+
+                # Start the existing stopped EC2 instance
+                print(f"DEBUG: Starting stopped instance {pod.instance_id}")
+                ec2.start_instances(InstanceIds=[pod.instance_id])
+                
+                # Wait for instance to be running
+                print(f"DEBUG: Waiting for instance {pod.instance_id} to be running...")
+                waiter = ec2.get_waiter("instance_running")
+                waiter.wait(InstanceIds=[pod.instance_id])
+
+                # Get updated instance details
+                print(f"DEBUG: Instance {pod.instance_id} is now running, getting details...")
+                desc = ec2.describe_instances(InstanceIds=[pod.instance_id])
+                inst = desc["Reservations"][0]["Instances"][0]
+                public_ip = inst.get("PublicIpAddress")
+
+                if not public_ip:
+                    print(f"DEBUG: [start_stopped] instance has no PublicIpAddress")
+                else:
+                    print(f"DEBUG: Got public IP: {public_ip}")
+
+                # Update pod with new public IP and set to running
+                pod.public_ip = public_ip
+                pod.status = PodStatus.running
+                db.commit()
+                
+                print(f"DEBUG: [start_stopped] running pod_id={pod_id} ip={public_ip} id={pod.instance_id}")
+                logger.info(f"Pod {pod_id} started successfully (existing instance {pod.instance_id})")
+
+                # Start metering in background
+                _start_metering(pod_id)
+                return
+
             # Update status to starting
-            pod.status = 'starting'
+            pod.status = PodStatus.starting
             db.commit()
             
-            # AWS EC2 provisioning logic
+            # AWS EC2 provisioning logic for new instances
             logger.info(f"[provision] start pod_id={pod_id}")
             
             ec2 = boto3.client("ec2", region_name=settings.AWS_REGION,
@@ -131,7 +254,7 @@ def provision_pod(pod_id: int, instance_type: str = "t3.micro"):
 
             # Update pod with final details and set to running
             pod.public_ip = public_ip
-            pod.status = 'running'
+            pod.status = PodStatus.running
             db.commit()
             
             print(f"DEBUG: [provision] running pod_id={pod_id} ip={public_ip} id={instance_id}")
