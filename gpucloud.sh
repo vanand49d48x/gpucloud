@@ -1,6 +1,6 @@
 #!/bin/bash
 # GPUCloud Service Management Script
-# Usage: ./gpucloud.sh {start|stop|restart|status|logs}
+# Usage: ./gpucloud.sh {start|stop|restart|status|logs|setup}
 
 set -e
 
@@ -12,13 +12,38 @@ BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 NC='\033[0m' # No Color
 
+
 # Configuration
-PROJECT_ROOT="/home/paperspace/NewMyPods/mypods"
-VENV_PATH="$PROJECT_ROOT/venv"
-API_PORT=8080
-FRONTEND_PORT=3000
-REDIS_PORT=6379
-POSTGRES_PORT=5432
+PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
+VENV_PATH="${VENV_PATH:-$PROJECT_ROOT/venv}"
+API_PORT="${API_PORT:-8080}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+REDIS_PORT="${REDIS_PORT:-6379}"
+# Use actual running PostgreSQL port (detected from pg_lsclusters)
+POSTGRES_PORT="${POSTGRES_PORT:-5433}"
+
+# Setup function: installs system packages, sets up DB, configures nginx
+setup_all() {
+    log "🛠️  Running GPUCloud setup..."
+    # Install system packages
+    sudo apt update
+    sudo apt install -y python3 python3-venv python3-pip nodejs npm postgresql postgresql-contrib redis-server nginx
+    log "✅ System packages installed"
+
+    # Setup PostgreSQL
+    sudo -u postgres psql -c "CREATE DATABASE gpucloud;" 2>/dev/null || echo "Database already exists"
+    sudo -u postgres psql -c "CREATE USER gpucloud WITH PASSWORD 'gpucloud';" 2>/dev/null || echo "User already exists"
+    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE gpucloud TO gpucloud;" 2>/dev/null || echo "Privileges already granted"
+    log "✅ Database setup complete"
+
+    # Setup Nginx
+    sudo cp nginx/gpucloud.conf /etc/nginx/sites-available/gpucloud
+    if [ ! -L "/etc/nginx/sites-enabled/gpucloud" ]; then
+        sudo ln -s /etc/nginx/sites-available/gpucloud /etc/nginx/sites-enabled/
+    fi
+    sudo systemctl restart nginx
+    log "✅ Nginx configured and restarted"
+}
 
 # Service names for easy identification
 SERVICE_NAME="gpucloud"
@@ -72,16 +97,34 @@ wait_for_service() {
 start_database() {
     log "🗄️  Starting database services..."
     
-    if ! is_running "postgres"; then
-        docker compose up -d postgres redis
-        log "✅ Database services started"
+    log "🔎 Checking and starting native database services..."
+
+    # Check if PostgreSQL cluster is ready
+    if pg_isready -h localhost -p $POSTGRES_PORT | grep -q "accepting connections"; then
+        log "✅ PostgreSQL already running and accepting connections"
     else
-        log "✅ Database services already running"
+        log "🔄 PostgreSQL not ready, attempting restart..."
+        sudo systemctl restart postgresql
+        sleep 2
+        if pg_isready -h localhost -p $POSTGRES_PORT | grep -q "accepting connections"; then
+            log "✅ PostgreSQL started and accepting connections"
+        else
+            log "❌ PostgreSQL failed to start or accept connections"
+            exit 1
+        fi
     fi
-    
+
+    # Start Redis if not running
+    if ! systemctl is-active --quiet redis-server; then
+        sudo systemctl start redis-server
+        log "✅ Redis started"
+    else
+        log "✅ Redis already running"
+    fi
+
     # Wait for Redis
     wait_for_service "Redis" $REDIS_PORT
-    
+
     # Wait for PostgreSQL
     wait_for_service "PostgreSQL" $POSTGRES_PORT
 }
@@ -325,7 +368,8 @@ stop_all() {
     
     # Stop database services
     log "🗄️  Stopping database services..."
-    docker compose down
+    sudo systemctl stop redis-server || true
+    sudo systemctl stop postgresql || true
     log "✅ Database services stopped"
     
     # Stop nginx if running
@@ -507,6 +551,9 @@ case "${1:-help}" in
         ;;
     logs)
         show_logs
+        ;;
+    setup)
+        setup_all
         ;;
     help|*)
         show_help
