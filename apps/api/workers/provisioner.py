@@ -461,3 +461,92 @@ def teardown_pod(pod_id: int):
                     pod.status = 'error'
                     db.commit()
             raise
+
+def resize_filesystem(pod_id: int, volume_id: str, old_size_gb: int, new_size_gb: int):
+    """Automatically resize the filesystem after EBS volume expansion"""
+    print(f"DEBUG: Resizing filesystem for pod {pod_id}, volume {volume_id}")
+    
+    with Session(engine) as db:
+        try:
+            # Get pod from database
+            pod = db.query(Pod).filter(Pod.id == pod_id).first()
+            
+            if not pod:
+                logger.error(f"Pod {pod_id} not found in database")
+                return
+            
+            if not pod.instance_id:
+                logger.error(f"Pod {pod_id} has no instance_id, cannot resize filesystem")
+                return
+
+            logger.info(f"[resize_filesystem] pod_id={pod_id} volume_id={volume_id} {old_size_gb}GB -> {new_size_gb}GB")
+            
+            ec2 = boto3.client("ec2", region_name=settings.AWS_REGION,
+                              aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                              aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY)
+
+            # Wait for volume to be ready for filesystem operations
+            print(f"DEBUG: Waiting for volume {volume_id} to be ready")
+            waiter = ec2.get_waiter('volume_available')
+            waiter.wait(VolumeIds=[volume_id])
+            
+            # Get instance details for SSH connection
+            desc = ec2.describe_instances(InstanceIds=[pod.instance_id])
+            if not desc["Reservations"]:
+                logger.error(f"Instance {pod.instance_id} not found in AWS")
+                return
+                
+            instance = desc["Reservations"][0]["Instances"][0]
+            if instance["State"]["Name"] != "running":
+                logger.info(f"Instance {pod.instance_id} is not running, filesystem resize will be done on next start")
+                return
+
+            # Use AWS Systems Manager to run resize commands
+            ssm = boto3.client("ssm", region_name=settings.AWS_REGION,
+                              aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                              aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY)
+
+            # Determine the root device and filesystem type
+            root_device = instance.get("RootDeviceName", "/dev/sda1")
+            
+            # Try to resize the filesystem (works for most Linux distributions)
+            resize_commands = [
+                "sudo growpart /dev/sda 1",  # Expand partition
+                "sudo resize2fs /dev/sda1",  # Resize ext4 filesystem
+                "sudo xfs_growfs /",         # Resize XFS filesystem (alternative)
+            ]
+            
+            for cmd in resize_commands:
+                try:
+                    print(f"DEBUG: Running command: {cmd}")
+                    response = ssm.send_command(
+                        InstanceIds=[pod.instance_id],
+                        DocumentName="AWS-RunShellScript",
+                        Parameters={'commands': [cmd]},
+                        TimeoutSeconds=300
+                    )
+                    
+                    command_id = response['Command']['CommandId']
+                    
+                    # Wait for command completion
+                    time.sleep(5)
+                    output = ssm.get_command_invocation(
+                        CommandId=command_id,
+                        InstanceId=pod.instance_id
+                    )
+                    
+                    if output['Status'] == 'Success':
+                        logger.info(f"Successfully ran {cmd} on pod {pod_id}")
+                        break
+                    else:
+                        logger.warning(f"Command {cmd} failed on pod {pod_id}: {output.get('StandardErrorContent', 'Unknown error')}")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to run {cmd} on pod {pod_id}: {e}")
+                    continue
+            
+            logger.info(f"[resize_filesystem] Completed filesystem resize for pod {pod_id}")
+            
+        except Exception as e:
+            logger.error(f"[resize_filesystem] Failed to resize filesystem for pod {pod_id}: {e}")
+            traceback.print_exc()

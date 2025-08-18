@@ -1,12 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Play, Trash2, FileText, Eye, Plus, Search, Filter, Terminal, Globe, Square, RefreshCw } from 'lucide-react';
+import { Play, Trash2, FileText, Eye, Plus, Search, Filter, Terminal, Globe, Square, RefreshCw, Settings } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import GPUCatalog from './GPUCatalog';
 import WebTerminal from './WebTerminal';
 import SSHConnectionGuide from './SSHConnectionGuide';
 import LogViewer from './LogViewer';
+import InstanceConfigModal from './InstanceConfigModal';
 import { clientLogger as logger } from '../utils/logger';
 
 interface Pod {
@@ -41,6 +42,7 @@ export default function PodManager() {
   const [showTerminalModal, setShowTerminalModal] = useState(false);
   const [showSSHGuideModal, setShowSSHGuideModal] = useState(false);
   const [showLogViewerModal, setShowLogViewerModal] = useState(false);
+  const [showConfigModal, setShowConfigModal] = useState(false);
   const [selectedInstance, setSelectedInstance] = useState<CatalogItem | null>(null);
   const [selectedPod, setSelectedPod] = useState<Pod | null>(null);
 
@@ -683,6 +685,18 @@ export default function PodManager() {
                 <FileText className="w-4 h-4 mr-2" />
                 Logs
               </button>
+
+              <button
+                onClick={() => {
+                  setSelectedPod(pod);
+                  setShowConfigModal(true);
+                }}
+                className="btn-secondary text-sm"
+                title="View instance config and expand storage"
+              >
+                <Settings className="w-4 h-4 mr-2" />
+                Config
+              </button>
               
               {/* Terminal and SSH Access Buttons */}
               {pod.status === 'running' && pod.public_ip && (
@@ -778,6 +792,19 @@ export default function PodManager() {
         podId={selectedPod?.id}
         token={token || undefined}
       />
+
+      {/* Instance Config Modal */}
+      {selectedPod && (
+        <InstanceConfigModal
+          isOpen={showConfigModal}
+          onClose={() => {
+            setShowConfigModal(false);
+            setSelectedPod(null);
+          }}
+          podId={selectedPod.id}
+          token={token || undefined}
+        />
+      )}
     </div>
   );
 }

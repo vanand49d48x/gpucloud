@@ -17,6 +17,10 @@ router = APIRouter(prefix="/v1", tags=["pods"])
 class CreatePodIn(BaseModel):
     template_id: str
 
+class ExpandStorageIn(BaseModel):
+    additional_gb: Optional[int] = None
+    new_size_gb: Optional[int] = None
+
 @router.get("/templates")
 def list_templates():
     return [{"id": k, **v} for k, v in TEMPLATES.items()]
@@ -25,6 +29,128 @@ def list_templates():
 def get_system_health():
     """Get overall system health status"""
     return health_checker.get_health_status()
+
+@router.get("/pods/{pod_id}/config")
+def get_pod_configuration(pod_id: int, session: Session = Depends(get_session), user=Depends(current_user)):
+    """Return current instance configuration and storage details for the pod"""
+    pod = session.get(Pod, pod_id)
+    if not pod or pod.user_id != user.id:
+        raise HTTPException(status_code=404, detail="pod not found")
+
+    try:
+        config: dict = {
+            "pod_id": pod.id,
+            "status": str(pod.status),
+            "instance_id": pod.instance_id,
+            "instance_type": pod.instance_type,
+            "public_ip": pod.public_ip,
+            "gpu_type": pod.gpu_type,
+            "vram_gb": pod.vram_gb,
+        }
+
+        # If AWS instance exists, enrich with EBS volume info
+        if pod.instance_id:
+            import boto3
+            from apps.api.app.config import settings
+            ec2 = boto3.client("ec2", region_name=settings.AWS_REGION)
+            desc = ec2.describe_instances(InstanceIds=[pod.instance_id])
+            if desc["Reservations"]:
+                inst = desc["Reservations"][0]["Instances"][0]
+                # Root device and block mappings
+                block_devs = inst.get("BlockDeviceMappings", [])
+                volumes = []
+                for bdm in block_devs:
+                    vol_id = bdm.get("Ebs", {}).get("VolumeId")
+                    if vol_id:
+                        v = ec2.describe_volumes(VolumeIds=[vol_id])["Volumes"][0]
+                        volumes.append({
+                            "volume_id": vol_id,
+                            "size_gb": v.get("Size"),
+                            "type": v.get("VolumeType"),
+                            "iops": v.get("Iops"),
+                            "throughput": v.get("Throughput"),
+                            "device_name": bdm.get("DeviceName")
+                        })
+                config["volumes"] = volumes
+
+        return config
+    except Exception as e:
+        logger.error(f"Failed to fetch configuration for pod {pod_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch pod configuration")
+
+@router.post("/pods/{pod_id}/storage/expand")
+def expand_pod_storage(pod_id: int, body: ExpandStorageIn, session: Session = Depends(get_session), user=Depends(current_user)):
+    """Increase the root EBS volume size. Either provide new_size_gb or additional_gb."""
+    pod = session.get(Pod, pod_id)
+    if not pod or pod.user_id != user.id:
+        raise HTTPException(status_code=404, detail="pod not found")
+
+    if not pod.instance_id:
+        raise HTTPException(status_code=400, detail="pod has no instance attached")
+
+    try:
+        import boto3
+        from apps.api.app.config import settings
+        ec2 = boto3.client("ec2", region_name=settings.AWS_REGION)
+
+        # Find root volume via block device mappings
+        desc = ec2.describe_instances(InstanceIds=[pod.instance_id])
+        if not desc["Reservations"]:
+            raise HTTPException(status_code=404, detail="instance not found in AWS")
+        inst = desc["Reservations"][0]["Instances"][0]
+        root_device = inst.get("RootDeviceName")
+        root_volume_id = None
+        for bdm in inst.get("BlockDeviceMappings", []):
+            if bdm.get("DeviceName") == root_device and bdm.get("Ebs"):
+                root_volume_id = bdm["Ebs"].get("VolumeId")
+                break
+        if not root_volume_id:
+            raise HTTPException(status_code=404, detail="root volume not found")
+
+        # Get current size
+        vol = ec2.describe_volumes(VolumeIds=[root_volume_id])["Volumes"][0]
+        current_size = int(vol.get("Size") or 0)
+
+        # Determine target size
+        if body.new_size_gb and body.new_size_gb > current_size:
+            target_size = int(body.new_size_gb)
+        elif body.additional_gb and body.additional_gb > 0:
+            target_size = current_size + int(body.additional_gb)
+        else:
+            raise HTTPException(status_code=400, detail="provide new_size_gb (> current) or additional_gb (>0)")
+
+        # Modify the volume size
+        ec2.modify_volume(VolumeId=root_volume_id, Size=target_size)
+
+        # Enqueue filesystem resize job if instance is running
+        if pod.status == "running":
+            job = q.enqueue("apps.api.workers.provisioner.resize_filesystem", pod.id, root_volume_id, current_size, target_size)
+            logger.info(f"Enqueued filesystem resize job {job.id} for pod {pod.id}")
+            message = (
+                f"Volume expansion requested: {root_volume_id} {current_size}GB → {target_size}GB. "
+                "AWS will optimize the volume in the background. Filesystem resize will be handled automatically once the volume is ready."
+            )
+        else:
+            message = (
+                f"Volume expansion requested: {root_volume_id} {current_size}GB → {target_size}GB. "
+                "AWS will optimize the volume in the background. Filesystem resize will be handled automatically when you start the instance."
+            )
+
+        logger.info(f"Storage expansion initiated for pod {pod_id}: {message}")
+        return {
+            "pod_id": pod.id, 
+            "instance_id": pod.instance_id, 
+            "volume_id": root_volume_id, 
+            "old_size_gb": current_size, 
+            "new_size_gb": target_size, 
+            "message": message,
+            "filesystem_resize_queued": pod.status == "running"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to expand storage for pod {pod_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to expand storage")
 
 @router.post("/pods")
 def create_pod(body: CreatePodIn, session: Session = Depends(get_session), user=Depends(current_user)):
