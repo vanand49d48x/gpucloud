@@ -519,23 +519,26 @@ export default function PodManager() {
             </div>
             
             <div className="flex space-x-3">
-                {(pod.status === 'running' || pod.status === 'stopping') ? (
+                {/* Stop button - only show for running pods, disabled when starting */}
+                {pod.status === 'running' ? (
                   <button
                     onClick={() => stopPod(pod.id)}
-                    disabled={pod.status === 'stopping'}
-                    className={`btn-danger text-sm ${pod.status === 'stopping' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    className="btn-danger text-sm"
                   >
-                    <Trash2 className="w-4 h-4 mr-2" />
-                    {pod.status === 'stopping' ? 'Stopping...' : 'Stop'}
+                    <Square className="w-4 h-4 mr-2" />
+                    Stop
                   </button>
-                ) : (pod.status === 'stopped' || pod.status === 'starting') ? (
+                ) : null}
+                
+                {/* Start button - only show for stopped pods, disabled when starting */}
+                {pod.status === 'stopped' ? (
                   <button
                     onClick={() => startPod(pod.id)}
-                    disabled={pod.status === 'starting' || !pod.instance_type}
-                    className={`btn-primary text-sm ${(pod.status === 'starting' || !pod.instance_type) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    disabled={!pod.instance_type}
+                    className={`btn-primary text-sm ${!pod.instance_type ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
                     <Play className="w-4 h-4 mr-2" />
-                    {pod.status === 'starting' ? 'Starting...' : 'Start'}
+                    Start
                   </button>
                 ) : null}
                 
@@ -551,19 +554,37 @@ export default function PodManager() {
                   </button>
                 )}
 
-                {/* Error Status Display */}
+                {/* Status Indicators */}
+                {pod.status === 'starting' && (
+                  <span className="text-blue-500 text-sm font-medium flex items-center">
+                    <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                    Starting...
+                  </span>
+                )}
+                
+                {pod.status === 'stopping' && (
+                  <span className="text-yellow-500 text-sm font-medium flex items-center">
+                    <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                    Stopping...
+                  </span>
+                )}
+                
                 {pod.status === 'error' && (
                   <span className="text-red-500 text-sm font-medium">
                     ⚠️ Error - Check logs
                   </span>
                 )}
 
-              {/* Delete button - always visible */}
+              {/* Delete button - disabled when starting or stopping */}
               <button 
                 onClick={() => deletePod(pod.id)}
-                disabled={pod.status === 'stopping'}
-                className={`btn-danger text-sm ${pod.status === 'stopping' ? 'opacity-50 cursor-not-allowed' : ''}`}
-                title={pod.status === 'stopping' ? 'Pod is stopping, wait before deleting' : 'Delete pod permanently'}
+                disabled={pod.status === 'starting' || pod.status === 'stopping'}
+                className={`btn-danger text-sm ${(pod.status === 'starting' || pod.status === 'stopping') ? 'opacity-50 cursor-not-allowed' : ''}`}
+                title={
+                  pod.status === 'starting' ? 'Pod is starting, wait before deleting' : 
+                  pod.status === 'stopping' ? 'Pod is stopping, wait before deleting' : 
+                  'Delete pod permanently'
+                }
               >
                 <Trash2 className="w-4 h-4 mr-2" />
                 Delete
