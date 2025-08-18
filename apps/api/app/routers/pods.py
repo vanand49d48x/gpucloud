@@ -212,6 +212,50 @@ async def sync_pod_status(pod_id: int, session: Session = Depends(get_session), 
         logger.error(f"Failed to sync status for pod {pod_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to sync pod status")
 
+@router.post("/pods/sync-all-statuses")
+async def sync_all_pod_statuses(session: Session = Depends(get_session), user=Depends(current_user)):
+    """Manually trigger status sync for all pods of the current user"""
+    try:
+        # Import here to avoid circular imports
+        from ..status_sync import StatusSyncManager
+        
+        # Create status sync manager and sync all user's pods
+        manager = StatusSyncManager()
+        
+        # Get all pods for the current user
+        user_pods = session.query(Pod).filter(Pod.user_id == user.id).all()
+        
+        if not user_pods:
+            return {
+                "message": "No pods found for user",
+                "pods_synced": 0
+            }
+        
+        # Sync each pod
+        synced_count = 0
+        for pod in user_pods:
+            try:
+                success = await manager.sync_single_pod_status(pod.id)
+                if success:
+                    synced_count += 1
+            except Exception as e:
+                logger.error(f"Failed to sync pod {pod.id}: {e}")
+                continue
+        
+        # Refresh all pods to get updated statuses
+        for pod in user_pods:
+            session.refresh(pod)
+        
+        return {
+            "message": f"Status sync completed for {synced_count} out of {len(user_pods)} pods",
+            "pods_synced": synced_count,
+            "total_pods": len(user_pods)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to sync all pod statuses: {e}")
+        raise HTTPException(status_code=500, detail="Failed to sync all pod statuses")
+
 @router.delete("/pods/{pod_id}")
 def delete_pod(pod_id: int, session: Session = Depends(get_session), user=Depends(current_user)):
     """Delete a pod completely - stop if running, terminate AWS instance, and remove from database"""

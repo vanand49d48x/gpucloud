@@ -8,6 +8,11 @@ const inter = Inter({ subsets: ['latin'] })
 export const metadata: Metadata = {
   title: 'GPUCloud Dashboard',
   description: 'Professional GPU Cloud Computing Platform',
+  icons: {
+    icon: '/favicon.ico',
+    shortcut: '/favicon.ico',
+    apple: '/favicon.ico',
+  },
 }
 
 export default function RootLayout({
