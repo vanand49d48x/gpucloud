@@ -331,28 +331,59 @@ stop_service() {
     local pid_file="$2"
     local process_pattern="$3"
     
+    log "🛑 Stopping $service_name..."
+    
     # First try to stop using PID file if it exists
     if [ -f "$pid_file" ]; then
         local pid=$(cat "$pid_file")
         if kill -0 "$pid" 2>/dev/null; then
-            log "Stopping $service_name (PID: $pid)..."
+            log "  Sending SIGTERM to PID $pid..."
             kill "$pid"
+            
+            # Wait up to 10 seconds for graceful shutdown
+            local wait_count=0
+            while kill -0 "$pid" 2>/dev/null && [ $wait_count -lt 10 ]; do
+                sleep 1
+                wait_count=$((wait_count + 1))
+            done
+            
+            # Force kill if still running
+            if kill -0 "$pid" 2>/dev/null; then
+                log "  Force killing PID $pid with SIGKILL..."
+                kill -9 "$pid"
+            fi
+            
             rm -f "$pid_file"
             log "✅ $service_name stopped"
-            return 0
         else
-            log "PID file exists but process not running, cleaning up..."
+            log "  PID file exists but process not running, cleaning up..."
             rm -f "$pid_file"
         fi
     fi
     
-    # If no PID file or process not found, check if it's running by pattern
+    # Aggressive cleanup: kill any remaining processes by pattern
+    if [ -n "$process_pattern" ]; then
+        # Kill all processes matching the pattern
+        local pids=$(pgrep -f "$process_pattern" 2>/dev/null || true)
+        if [ -n "$pids" ]; then
+            log "  Force killing remaining processes: $pids"
+            echo "$pids" | xargs kill -9 2>/dev/null || true
+        fi
+        
+        # Double-check and kill any stubborn processes
+        sleep 1
+        local remaining_pids=$(pgrep -f "$process_pattern" 2>/dev/null || true)
+        if [ -n "$remaining_pids" ]; then
+            log "  Force killing stubborn processes: $remaining_pids"
+            echo "$remaining_pids" | xargs kill -9 2>/dev/null || true
+        fi
+    fi
+    
+    # Verify service is stopped
     if [ -n "$process_pattern" ] && is_running "$process_pattern"; then
-        log "Found running $service_name process, stopping it..."
-        pkill -f "$process_pattern"
-        log "✅ $service_name stopped"
+        log "⚠️  Warning: $service_name may still be running after stop attempt"
     else
-        log "✅ $service_name already stopped"
+        log "✅ $service_name confirmed stopped"
     fi
 }
 
@@ -360,11 +391,11 @@ stop_service() {
 stop_all() {
     log "${YELLOW}🛑 Stopping GPUCloud Production System...${NC}"
     
-    # Stop services
-    stop_service "Frontend" "/tmp/gpucloud_frontend.pid" "next dev"
-    stop_service "API Server" "/tmp/gpucloud_api.pid" "uvicorn apps.api.app.main:app"
-    stop_service "Worker" "/tmp/gpucloud_worker.pid" "python -m apps.api.workers"
-    stop_service "Health Monitoring" "/tmp/gpucloud_health.pid" "$HEALTH_SERVICE"
+    # Stop services with exact process patterns
+    stop_service "Frontend" "/tmp/gpucloud_frontend.pid" "next-server"
+    stop_service "API Server" "/tmp/gpucloud_api.pid" "uvicorn.*apps.api.app.main:app"
+    stop_service "Worker" "/tmp/gpucloud_worker.pid" "python.*apps.api.workers"
+    stop_service "Health Monitoring" "/tmp/gpucloud_health.pid" "python.*health_checker"
     
     # Stop database services
     log "🗄️  Stopping database services..."
@@ -482,11 +513,74 @@ show_logs() {
     esac
 }
 
+# Function to clear caches and temporary files
+clear_caches() {
+    log "🧹 Clearing caches and temporary files..."
+    
+    # Clear Python bytecode cache
+    find "$PROJECT_ROOT" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+    find "$PROJECT_ROOT" -name "*.pyc" -delete 2>/dev/null || true
+    find "$PROJECT_ROOT" -name "*.pyo" -delete 2>/dev/null || true
+    
+    # Clear Next.js build cache
+    if [ -d "$PROJECT_ROOT/apps/web/.next" ]; then
+        rm -rf "$PROJECT_ROOT/apps/web/.next"
+        log "  ✅ Next.js build cache cleared"
+    fi
+    
+    # Clear temporary log files (keep current ones)
+    rm -f /tmp/gpucloud_*.pid 2>/dev/null || true
+    
+    # Clear Redis cache if running
+    if systemctl is-active --quiet redis-server; then
+        redis-cli FLUSHALL >/dev/null 2>&1 || true
+        log "  ✅ Redis cache cleared"
+    fi
+    
+    log "✅ All caches cleared"
+}
+
 # Function to restart all services
 restart_all() {
     log "${YELLOW}🔄 Restarting GPUCloud Production System...${NC}"
+    
+    # Stop all services
     stop_all
-    sleep 2
+    
+    # Wait for complete shutdown
+    log "⏳ Waiting for complete shutdown..."
+    sleep 5
+    
+    # Clear all caches
+    clear_caches
+    
+    # Start all services fresh
+    log "🚀 Starting services fresh..."
+    start_all
+}
+
+# Function to force restart (kill -9 everything, clear all caches)
+force_restart() {
+    log "${RED}💥 Force Restarting GPUCloud Production System...${NC}"
+    
+    # Kill all processes with extreme prejudice
+    log "🔪 Force killing all GPUCloud processes..."
+    pkill -9 -f "uvicorn.*apps.api.app.main:app" 2>/dev/null || true
+    pkill -9 -f "python.*apps.api.workers" 2>/dev/null || true
+    pkill -9 -f "next-server" 2>/dev/null || true
+    pkill -9 -f "python.*health_checker" 2>/dev/null || true
+    
+    # Wait for processes to die
+    sleep 3
+    
+    # Clear all caches aggressively
+    clear_caches
+    
+    # Remove all PID files
+    rm -f /tmp/gpucloud_*.pid 2>/dev/null || true
+    
+    # Start all services fresh
+    log "🚀 Starting services fresh after force kill..."
     start_all
 }
 
@@ -514,22 +608,25 @@ rebuild_frontend() {
 show_help() {
     echo "GPUCloud Service Management Script"
     echo ""
-    echo "Usage: ./gpucloud.sh {start|stop|restart|rebuild|status|logs|help}"
+    echo "Usage: ./gpucloud.sh {start|stop|restart|force-restart|rebuild|status|logs|help}"
     echo ""
     echo "Commands:"
-    echo "  start   - Start all GPUCloud services"
-    echo "  stop    - Stop all GPUCloud services"
-    echo "  restart - Restart all GPUCloud services"
-    echo "  rebuild - Rebuild and restart frontend only"
-    echo "  status  - Show status of all services"
-    echo "  logs    - Show service logs"
-    echo "  help    - Show this help message"
+    echo "  start         - Start all GPUCloud services"
+    echo "  stop          - Stop all GPUCloud services"
+    echo "  restart       - Restart all GPUCloud services (graceful)"
+    echo "  force-restart - Force restart (kill -9, clear all caches)"
+    echo "  rebuild       - Rebuild and restart frontend only"
+    echo "  status        - Show status of all services"
+    echo "  logs          - Show service logs"
+    echo "  help          - Show this help message"
     echo ""
     echo "Examples:"
-    echo "  ./gpucloud.sh start    # Start all services"
-    echo "  ./gpucloud.sh rebuild  # Rebuild frontend only"
-    echo "  ./gpucloud.sh status   # Check service status"
-    echo "  ./gpucloud.sh logs     # View service logs"
+    echo "  ./gpucloud.sh start         # Start all services"
+    echo "  ./gpucloud.sh restart       # Graceful restart"
+    echo "  ./gpucloud.sh force-restart # Force restart (when graceful fails)"
+    echo "  ./gpucloud.sh rebuild       # Rebuild frontend only"
+    echo "  ./gpucloud.sh status        # Check service status"
+    echo "  ./gpucloud.sh logs          # View service logs"
 }
 
 # Main script logic
@@ -542,6 +639,9 @@ case "${1:-help}" in
         ;;
     restart)
         restart_all
+        ;;
+    force-restart)
+        force_restart
         ;;
     rebuild)
         rebuild_frontend

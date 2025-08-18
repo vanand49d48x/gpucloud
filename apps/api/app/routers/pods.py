@@ -220,11 +220,11 @@ def delete_pod(pod_id: int, session: Session = Depends(get_session), user=Depend
         if not pod or pod.user_id != user.id:
             raise HTTPException(status_code=404, detail="pod not found")
         
-        # If pod is running, stop it first
+        # If pod is running, terminate it first
         if pod.status in (PodStatus.running, PodStatus.starting):
-            logger.info(f"Stopping running pod {pod_id} before deletion")
-            # Enqueue teardown job to stop the instance
-            job = q.enqueue("apps.api.workers.provisioner.stop_pod", pod.id)
+            logger.info(f"Terminating running pod {pod_id} before deletion")
+            # Enqueue teardown job to terminate the instance
+            job = q.enqueue("apps.api.workers.provisioner.teardown_pod", pod.id)
             logger.info(f"Enqueued teardown job {job.id} for pod {pod.id} before deletion")
             
             # Update status to stopping
@@ -232,18 +232,18 @@ def delete_pod(pod_id: int, session: Session = Depends(get_session), user=Depend
             session.add(pod)
             session.commit()
             
-            # Return early - user should wait for pod to stop before deleting
+            # Return early - user should wait for pod to terminate before deleting
             return {
                 "id": pod.id, 
                 "status": str(pod.status),
-                "message": "Pod is being stopped. Please wait for it to stop completely before deleting."
+                "message": "Pod is being terminated. Please wait for it to terminate completely before deleting."
             }
         
         # If pod is stopping, return error
         if pod.status == PodStatus.stopping:
             raise HTTPException(
                 status_code=400, 
-                detail="Pod is currently stopping. Please wait for it to stop completely before deleting."
+                detail="Pod is currently terminating. Please wait for it to terminate completely before deleting."
             )
         
         # For stopped/error pods, proceed with deletion
