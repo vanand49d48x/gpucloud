@@ -59,9 +59,9 @@ restart_frontend() {
     # Wait a moment
     sleep 2
     
-    # Start frontend using production script
-    cd "$(dirname "$0")"
-    ./start_production.sh > /tmp/frontend_restart.log 2>&1 &
+    # Start frontend using gpucloud management script
+    cd /home/paperspace/NewMyPods/mypods
+    ./gpucloud.sh rebuild > /tmp/frontend_restart.log 2>&1 &
     
     log "${GREEN}Frontend restart initiated${NC}"
 }

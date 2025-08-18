@@ -12,8 +12,13 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+#!/bin/bash
+
+# Production deployment script for MyPods
+# This script starts all services in production mode
+
 # Configuration
-PROJECT_ROOT="/home/paperspace/mypods"
+PROJECT_ROOT="/home/paperspace/NewMyPods/mypods"
 VENV_PATH="$PROJECT_ROOT/venv"
 API_PORT=8080
 WORKER_QUEUE="provision"

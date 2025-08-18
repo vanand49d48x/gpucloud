@@ -8,16 +8,18 @@ from apps.api.app.security import parse_jwt
 
 auth_scheme = HTTPBearer(auto_error=False)
 
-def current_user(
-    creds: HTTPAuthorizationCredentials = Depends(auth_scheme),
-    session: Session = Depends(get_session),
-) -> User:
-    if creds is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
-    uid = parse_jwt(creds.credentials, settings.JWT_SECRET)
+def get_current_uid(credentials: HTTPAuthorizationCredentials = Depends(auth_scheme)) -> str:
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    uid = parse_jwt(credentials.credentials, settings.JWT_SECRET)
     if not uid:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    user = session.exec(select(User).where(User.id == int(uid))).first()
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    return uid
+
+def current_user(session: Session = Depends(get_session), uid: str = Depends(get_current_uid)):
+    user = session.query(User).filter(User.id == int(uid)).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        raise HTTPException(status_code=404, detail="User not found")
     return user

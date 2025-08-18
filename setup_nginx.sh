@@ -6,7 +6,13 @@ set -e
 echo "🔧 Setting up Nginx for GPUCloud Production..."
 
 # Colors
-RED='\033[0;31m'
+[Service]
+Type=forking
+User=paperspace
+Group=paperspace
+WorkingDirectory=/home/paperspace/NewMyPods/mypods
+ExecStart=/home/paperspace/NewMyPods/mypods/start_production.sh
+ExecReload=/bin/kill -HUP \$MAINPID33[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
@@ -118,7 +124,7 @@ Type=forking
 User=paperspace
 Group=paperspace
 WorkingDirectory=/home/paperspace/mypods
-ExecStart=/home/paperspace/mypods/start_production.sh
+ExecStart=/home/paperspace/NewMyPods/mypods/start_production.sh
 ExecReload=/bin/kill -HUP \$MAINPID
 Restart=always
 RestartSec=10

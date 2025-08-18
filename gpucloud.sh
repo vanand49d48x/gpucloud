@@ -13,7 +13,7 @@ PURPLE='\033[0;35m'
 NC='\033[0m' # No Color
 
 # Configuration
-PROJECT_ROOT="/home/paperspace/mypods"
+PROJECT_ROOT="/home/paperspace/NewMyPods/mypods"
 VENV_PATH="$PROJECT_ROOT/venv"
 API_PORT=8080
 FRONTEND_PORT=3000

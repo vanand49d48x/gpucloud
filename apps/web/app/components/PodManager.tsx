@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Play, Trash2, FileText, Eye, Plus, Search, Filter, Terminal, Globe, Square } from 'lucide-react';
+import { Play, Trash2, FileText, Eye, Plus, Search, Filter, Terminal, Globe, Square, RefreshCw } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import GPUCatalog from './GPUCatalog';
 import WebTerminal from './WebTerminal';
@@ -46,7 +46,7 @@ export default function PodManager() {
 
   const API_BASE = ''; // Use relative URLs, nginx will proxy to API backend
 
-  // Fetch pods from your backend
+  // Enhanced pod fetching with status sync
   const fetchPods = async () => {
     logger.info('Starting pods fetch', { hasToken: !!token, timestamp: new Date().toISOString() });
     if (!token) return;
@@ -71,6 +71,9 @@ export default function PodManager() {
           timestamp: new Date().toISOString()
         });
         setPods(data);
+        
+        // Check for pods that might be out of sync
+        checkForStatusMismatches(data);
       }
     } catch (error) {
       logger.error('Error fetching pods', { 
@@ -78,19 +81,70 @@ export default function PodManager() {
         stack: error instanceof Error ? error.stack : undefined,
         timestamp: new Date().toISOString()
       });
-      // Fallback to mock data for now
-      setPods([
-        {
-          id: 12,
-          status: 'running',
-          public_ip: '18.208.251.45',
-          template: null,
-          hourly_rate_cents: 3,
-          instance_id: 'i-00280e58876e5bbf8',
-          instance_type: 't1.micro',
-          created_at: '2025-08-15T01:12:20'
+    }
+  };
+
+  // Check for pods that might have status mismatches
+  const checkForStatusMismatches = (pods: Pod[]) => {
+    const potentiallyStuckPods = pods.filter(pod => 
+      (pod.status === 'starting' || pod.status === 'stopping') && 
+      pod.instance_id
+    );
+    
+    if (potentiallyStuckPods.length > 0) {
+      logger.warn('Found potentially stuck pods, triggering status sync', {
+        stuckPods: potentiallyStuckPods.map(p => ({ id: p.id, status: p.status })),
+        timestamp: new Date().toISOString()
+      });
+      
+      // Trigger status sync for stuck pods
+      potentiallyStuckPods.forEach(pod => {
+        syncPodStatus(pod.id);
+      });
+    }
+  };
+
+  // Manual status sync for a specific pod
+  const syncPodStatus = async (podId: number) => {
+    try {
+      const response = await fetch(`${API_BASE}/v1/pods/${podId}/sync-status`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
         }
-      ]);
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        logger.info('Pod status synced successfully', { podId, result });
+        
+        // Refresh pods after sync
+        setTimeout(() => fetchPods(), 1000);
+      }
+    } catch (error) {
+      logger.error('Error syncing pod status', { podId, error });
+    }
+  };
+
+  // Sync all pod statuses
+  const syncAllPodStatuses = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/v1/pods/sync-all-statuses`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        logger.info('All pod statuses synced successfully', { result });
+        
+        // Refresh pods after sync
+        setTimeout(() => fetchPods(), 1000);
+      }
+    } catch (error) {
+      logger.error('Error syncing all pod statuses', { error });
     }
   };
 
@@ -323,13 +377,13 @@ export default function PodManager() {
     setLoading(false);
   }, [token]);
 
-  // Auto-refresh pods every 10 seconds to keep status updated
+  // Enhanced auto-refresh: poll every 5 seconds for better real-time updates
   useEffect(() => {
     if (!token) return;
     
     const interval = setInterval(() => {
       fetchPods();
-    }, 10000);
+    }, 5000); // 5 seconds for more responsive updates
     
     return () => clearInterval(interval);
   }, [token]);
@@ -379,10 +433,7 @@ export default function PodManager() {
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <button 
-            onClick={() => {
-              logger.info('Deploy button clicked in PodManager', { timestamp: new Date().toISOString() });
-              setShowDeployModal(true);
-            }}
+            onClick={() => setShowDeployModal(true)}
             className="btn-primary"
           >
             <Plus className="w-4 h-4 mr-2" />
@@ -390,14 +441,12 @@ export default function PodManager() {
           </button>
           
           <button 
-            onClick={() => {
-              logger.info('Log viewer button clicked', { timestamp: new Date().toISOString() });
-              setShowLogViewerModal(true);
-            }}
+            onClick={syncAllPodStatuses}
             className="btn-secondary"
+            title="Sync all pod statuses with AWS"
           >
-            <FileText className="w-4 h-4 mr-2" />
-            View Logs
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Sync Status
           </button>
         </div>
         
@@ -470,26 +519,45 @@ export default function PodManager() {
             </div>
             
             <div className="flex space-x-3">
-              {pod.status === 'running' ? (
-                <button 
-                  onClick={() => stopPod(pod.id)}
-                  disabled={false}
-                  className="btn-warning text-sm"
-                >
-                  <Square className="w-4 h-4 mr-2" />
-                  Stop
-                </button>
-              ) : (
-                <button 
-                  onClick={() => startPod(pod.id)}
-                  disabled={pod.status === 'starting' || !pod.instance_type}
-                  className={`btn-primary text-sm ${(pod.status === 'starting' || !pod.instance_type) ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <Play className="w-4 h-4 mr-2" />
-                  {pod.status === 'starting' ? 'Starting...' : 'Start'}
-                </button>
-              )}
-              
+                {(pod.status === 'running' || pod.status === 'stopping') ? (
+                  <button
+                    onClick={() => stopPod(pod.id)}
+                    disabled={pod.status === 'stopping'}
+                    className={`btn-danger text-sm ${pod.status === 'stopping' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    {pod.status === 'stopping' ? 'Stopping...' : 'Stop'}
+                  </button>
+                ) : (pod.status === 'stopped' || pod.status === 'starting') ? (
+                  <button
+                    onClick={() => startPod(pod.id)}
+                    disabled={pod.status === 'starting' || !pod.instance_type}
+                    className={`btn-primary text-sm ${(pod.status === 'starting' || !pod.instance_type) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <Play className="w-4 h-4 mr-2" />
+                    {pod.status === 'starting' ? 'Starting...' : 'Start'}
+                  </button>
+                ) : null}
+                
+                {/* Status Sync Button for potentially stuck pods */}
+                {(pod.status === 'starting' || pod.status === 'stopping') && pod.instance_id && (
+                  <button
+                    onClick={() => syncPodStatus(pod.id)}
+                    className="btn-secondary text-sm bg-yellow-600 hover:bg-yellow-700"
+                    title="Sync status with AWS"
+                  >
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Sync
+                  </button>
+                )}
+
+                {/* Error Status Display */}
+                {pod.status === 'error' && (
+                  <span className="text-red-500 text-sm font-medium">
+                    ⚠️ Error - Check logs
+                  </span>
+                )}
+
               {/* Delete button - always visible */}
               <button 
                 onClick={() => deletePod(pod.id)}

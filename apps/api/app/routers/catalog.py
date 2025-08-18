@@ -36,7 +36,7 @@ def launch_aws_instance(body: LaunchInstanceIn, session: Session = Depends(get_s
         
         # Credit check: require at least 1 minute worth
         min_needed = max(1, round(hourly_rate_cents / 60))
-        credits = session.exec(select(Credits).where(Credits.user_id == user.id)).first()
+        credits = session.query(Credits).filter(Credits.user_id == user.id).first()
         if not credits or credits.balance_cents < min_needed:
             raise HTTPException(
                 status_code=402, 
@@ -48,6 +48,7 @@ def launch_aws_instance(body: LaunchInstanceIn, session: Session = Depends(get_s
             user_id=user.id,
             status=PodStatus.pending,
             provider=Provider.aws,
+            instance_type=instance["instance_type"],  # Set instance_type from catalog
             hourly_rate_cents=hourly_rate_cents,
         )
         session.add(pod)

@@ -20,9 +20,10 @@ class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
-@router.post("/signup", response_model=TokenOut)
+@router.post("/signup")
 def signup(body: SignupIn, session: Session = Depends(get_session)):
-    existing = session.exec(select(User).where(User.email == body.email)).first()
+    # Check if email already exists
+    existing = session.query(User).filter(User.email == body.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     user = User(email=body.email, password_hash=hash_password(body.password))
@@ -33,10 +34,11 @@ def signup(body: SignupIn, session: Session = Depends(get_session)):
     token = make_jwt(str(user.id), settings.JWT_SECRET)
     return TokenOut(access_token=token)
 
-@router.post("/login", response_model=TokenOut)
+@router.post("/login")
 def login(body: LoginIn, session: Session = Depends(get_session)):
-    user = session.exec(select(User).where(User.email == body.email)).first()
+    user = session.query(User).filter(User.email == body.email).first()
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=400, detail="Invalid email or password")
+    
     token = make_jwt(str(user.id), settings.JWT_SECRET)
     return TokenOut(access_token=token)

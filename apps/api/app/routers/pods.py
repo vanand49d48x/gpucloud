@@ -31,7 +31,7 @@ def create_pod(body: CreatePodIn, session: Session = Depends(get_session), user=
         raise HTTPException(status_code=400, detail="unknown template")
     # credit check: at least 1 min worth
     min_needed = tpl["hourly_rate_cents"] // 60 or 1
-    credits = session.exec(select(Credits).where(Credits.user_id == user.id)).first()
+    credits = session.query(Credits).filter(Credits.user_id == user.id).first()
     if not credits or credits.balance_cents < min_needed:
         raise HTTPException(status_code=402, detail="insufficient credits")
 
@@ -40,6 +40,7 @@ def create_pod(body: CreatePodIn, session: Session = Depends(get_session), user=
         status=PodStatus.pending,
         provider=Provider.aws,
         hourly_rate_cents=tpl["hourly_rate_cents"],
+        instance_type=tpl["instance_type"],  # Set instance_type during creation
     )
     session.add(pod); session.commit(); session.refresh(pod)
 
@@ -50,7 +51,7 @@ def create_pod(body: CreatePodIn, session: Session = Depends(get_session), user=
 
 @router.get("/pods")
 def list_pods(session: Session = Depends(get_session), user=Depends(current_user)):
-    rows = session.exec(select(Pod).where(Pod.user_id == user.id).order_by(Pod.id.desc())).all()
+    rows = session.query(Pod).filter(Pod.user_id == user.id).order_by(Pod.id.desc()).all()
     return [
         {
             "id": p.id,
@@ -81,9 +82,9 @@ def stop_pod(pod_id: int, session: Session = Depends(get_session), user=Depends(
         # Preserve instance_type before stopping (for restart capability)
         instance_type = pod.instance_type
         
-        # enqueue teardown by string
-        job = q.enqueue("apps.api.workers.provisioner.teardown_pod", pod.id)
-        logger.info(f"Enqueued teardown job {job.id} for pod {pod.id}")
+    # enqueue teardown by string
+    job = q.enqueue("apps.api.workers.provisioner.teardown_pod", pod.id)
+        logger.info(f"Enqueued stop job {job.id} for pod {pod.id}")
         
         pod.status = PodStatus.stopping
         session.add(pod); session.commit()
@@ -115,7 +116,7 @@ def start_pod(pod_id: int, session: Session = Depends(get_session), user=Depends
             
             # Credit check: require at least 1 minute worth
             min_needed = max(1, round(pod.hourly_rate_cents / 60))
-            credits = session.exec(select(Credits).where(Credits.user_id == user.id)).first()
+            credits = session.query(Credits).filter(Credits.user_id == user.id).first()
             if not credits or credits.balance_cents < min_needed:
                 raise HTTPException(
                     status_code=402, 
@@ -172,6 +173,42 @@ def force_reset_pod(pod_id: int, session: Session = Depends(get_session), user=D
         logger.error(f"Failed to force reset pod {pod_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to reset pod")
 
+@router.post("/pods/{pod_id}/sync-status")
+async def sync_pod_status(pod_id: int, session: Session = Depends(get_session), user=Depends(current_user)):
+    """Manually trigger status sync for a specific pod"""
+    try:
+        pod = session.get(Pod, pod_id)
+        if not pod or pod.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Pod not found")
+        
+        # Import here to avoid circular imports
+        from ..status_sync import StatusSyncManager
+        
+        # Create status sync manager and sync this specific pod
+        manager = StatusSyncManager()
+        success = await manager.sync_single_pod_status(pod_id)
+        
+        if success:
+            # Refresh the pod data to get updated status
+            session.refresh(pod)
+            return {
+                "id": pod.id, 
+                "status": pod.status,
+                "message": "Status sync completed successfully"
+            }
+        else:
+            return {
+                "id": pod.id,
+                "status": pod.status, 
+                "message": "Status sync completed but no changes made"
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to sync status for pod {pod_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to sync pod status")
+
 @router.delete("/pods/{pod_id}")
 def delete_pod(pod_id: int, session: Session = Depends(get_session), user=Depends(current_user)):
     """Delete a pod completely - stop if running, terminate AWS instance, and remove from database"""
@@ -184,7 +221,7 @@ def delete_pod(pod_id: int, session: Session = Depends(get_session), user=Depend
         if pod.status in (PodStatus.running, PodStatus.starting):
             logger.info(f"Stopping running pod {pod_id} before deletion")
             # Enqueue teardown job to stop the instance
-            job = q.enqueue("apps.api.workers.provisioner.teardown_pod", pod.id)
+            job = q.enqueue("apps.api.workers.provisioner.stop_pod", pod.id)
             logger.info(f"Enqueued teardown job {job.id} for pod {pod.id} before deletion")
             
             # Update status to stopping

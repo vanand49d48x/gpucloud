@@ -57,11 +57,9 @@ class HealthChecker:
         """Find pods stuck in intermediate states"""
         cutoff_time = datetime.utcnow() - timedelta(minutes=self.stuck_threshold)
         
-        stuck_pods = session.exec(
-            select(Pod).where(
-                (Pod.status.in_([PodStatus.starting, PodStatus.stopping])) &
-                (Pod.updated_at < cutoff_time)
-            )
+        stuck_pods = session.query(Pod).filter(
+            Pod.status.in_([PodStatus.starting, PodStatus.stopping]),
+            Pod.updated_at < cutoff_time
         ).all()
         
         return stuck_pods
@@ -175,7 +173,7 @@ class HealthChecker:
         """Get current system health status"""
         try:
             with Session(engine) as session:
-                total_pods = session.exec(select(Pod)).all()
+                total_pods = session.query(Pod).all()
                 
                 status_counts = {}
                 for status in PodStatus:
@@ -184,11 +182,9 @@ class HealthChecker:
                 
                 # Check for stuck pods
                 cutoff_time = datetime.utcnow() - timedelta(minutes=self.stuck_threshold)
-                stuck_pods = session.exec(
-                    select(Pod).where(
-                        (Pod.status.in_([PodStatus.starting, PodStatus.stopping])) &
-                        (Pod.updated_at < cutoff_time)
-                    )
+                stuck_pods = session.query(Pod).filter(
+                    Pod.status.in_([PodStatus.starting, PodStatus.stopping]),
+                    Pod.updated_at < cutoff_time
                 ).all()
                 
                 return {

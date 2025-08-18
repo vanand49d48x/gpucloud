@@ -20,9 +20,11 @@ class Settings(BaseSettings):
     AWS_CATALOG_REGIONS: list[str] = ["us-east-1"]  # regions you want to offer
     MARKUP_MULTIPLIER: float = 1.5  # 50% markup
     CATALOG_CACHE_TTL_SECONDS: int = 3600
+    # Sync interval for status sync manager (seconds)
+    SYNC_INTERVAL: int = 30  # Default to 30s, can be overridden by env
     
     class Config:
-        env_file = "/home/paperspace/mypods/.env"
+        env_file = "/home/paperspace/NewMyPods/mypods/.env"
         extra = "ignore"  # Ignore extra environment variables
 
 settings = Settings()

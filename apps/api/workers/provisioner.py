@@ -10,7 +10,8 @@ from apps.api.app.models import Pod, PodStatus, Provider
 from apps.api.app.config import settings
 from apps.api.app.queue import q
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # Production settings
 MAX_RETRIES = 3
@@ -21,12 +22,13 @@ def _atomic_debit(user_id: int, cents: int) -> bool:
     # Returns True if debit succeeded, False if insufficient funds.
     with Session(engine) as s:
         # Use raw SQL for atomicity
-        res = s.exec(f"""
+        from sqlalchemy import text
+        res = s.execute(text(f"""
             UPDATE credits 
             SET balance_cents = balance_cents - {cents}, updated_at = NOW()
             WHERE user_id = {user_id} AND balance_cents >= {cents}
             RETURNING id
-        """)
+        """))
         return res.fetchone() is not None
 
 def _update(pod_id: int, **kwargs) -> Pod | None:
@@ -35,7 +37,7 @@ def _update(pod_id: int, **kwargs) -> Pod | None:
         with Session(engine) as s:
             pod = s.get(Pod, pod_id)
             if not pod:
-                log.error(f"[update] Pod {pod_id} not found")
+                print(f"DEBUG: [update] Pod {pod_id} not found")
                 return None
             
             # Update fields
@@ -49,162 +51,110 @@ def _update(pod_id: int, **kwargs) -> Pod | None:
             s.commit()
             s.refresh(pod)
             
-            log.info(f"[update] Pod {pod_id} updated: {kwargs}")
+            print(f"DEBUG: [update] Pod {pod_id} updated: {kwargs}")
             return pod
             
     except Exception as e:
-        log.error(f"[update] Failed to update pod {pod_id}: {e}")
+        print(f"DEBUG: [update] Failed to update pod {pod_id}: {e}")
         return None
 
 def _check_job_timeout(pod_id: int, start_time: datetime) -> bool:
     """Check if job has exceeded timeout"""
-    elapsed = datetime.utcnow() - start_time
-    if elapsed > timedelta(minutes=JOB_TIMEOUT_MINUTES):
-        log.error(f"[provision] Job timeout for pod {pod_id} after {elapsed}")
+    elapsed = time.time() - start_time
+    if elapsed > JOB_TIMEOUT_MINUTES * 60:
+        print(f"DEBUG: [provision] Job timeout for pod {pod_id} after {elapsed}")
         return True
     return False
 
 def provision_pod(pod_id: int, instance_type: str = "t3.micro"):
-    """Provision a pod with comprehensive error handling and timeout protection"""
-    start_time = datetime.utcnow()
-    log.info(f"[provision] start pod_id={pod_id}")
+    """Provision a pod with enhanced error handling"""
+    print(f"DEBUG: Starting pod provision for pod {pod_id}")
     
-    try:
-        # Initial status update
-        pod = _update(pod_id, status=PodStatus.starting)
-        if not pod:
-            return
-        
-        # Check for existing running instance (prevent duplicates)
-        # But allow restarting stopped pods that have instance_id
-        if pod.instance_id and pod.status == PodStatus.running:
-            log.warning(f"[provision] Pod {pod_id} already has running instance {pod.instance_id}, skipping")
-            return
-        
-        ec2 = boto3.client("ec2", region_name=settings.AWS_REGION)
-        
-        # If we have an existing instance_id, try to start it instead of creating new one
-        if pod.instance_id:
-            log.info(f"[provision] Restarting existing instance {pod.instance_id} for pod {pod_id}")
-            try:
-                # Start the existing stopped instance
-                ec2.start_instances(InstanceIds=[pod.instance_id])
-                
-                # Wait for instance to be running
-                waiter = ec2.get_waiter("instance_running")
-                waiter.wait(
-                    InstanceIds=[pod.instance_id],
-                    WaiterConfig={'Delay': 10, 'MaxAttempts': 30}
-                )
-                
-                # Get updated instance details
-                desc = ec2.describe_instances(InstanceIds=[pod.instance_id])
-                inst = desc["Reservations"][0]["Instances"][0]
-                public_ip = inst.get("PublicIpAddress")
-                
-                if not public_ip:
-                    log.warning("[provision] restarted instance has no PublicIpAddress")
-                
-                # Update status to running
-                _update(pod_id, public_ip=public_ip, status=PodStatus.running)
-                log.info(f"[provision] restarted pod_id={pod_id} ip={public_ip} id={pod.instance_id}")
-                
-                # Start metering in background
-                _start_metering(pod_id)
+    # Keep session open for the entire function
+    with Session(engine) as db:
+        try:
+            # Get pod from database
+            pod = db.query(Pod).filter(Pod.id == pod_id).first()
+            
+            if not pod:
+                logger.error(f"Pod {pod_id} not found in database")
                 return
-                
-            except Exception as e:
-                log.error(f"[provision] Failed to restart instance {pod.instance_id}: {e}")
-                # Fall back to creating new instance
-                log.info(f"[provision] Falling back to creating new instance for pod {pod_id}")
-        
-        # Launch new instance with retry logic
-        instance_id = None
-        for attempt in range(MAX_RETRIES):
+
+            # Update status to starting
+            pod.status = 'starting'
+            db.commit()
+            
+            # AWS EC2 provisioning logic
+            logger.info(f"[provision] start pod_id={pod_id}")
+            
+            ec2 = boto3.client("ec2", region_name=settings.AWS_REGION,
+                              aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                              aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY)
+
+            # Launch EC2 instance
+            run = ec2.run_instances(
+                ImageId=settings.BASE_AMI_ID,
+                InstanceType=instance_type,
+                MinCount=1, MaxCount=1,
+                IamInstanceProfile={"Name": settings.AWS_INSTANCE_PROFILE},
+                SubnetId=settings.AWS_SUBNET_ID,
+                SecurityGroupIds=[settings.AWS_SECURITY_GROUP_ID],
+                KeyName=settings.AWS_SSH_KEY_NAME,
+                TagSpecifications=[{
+                    "ResourceType": "instance",
+                    "Tags": [{"Key":"Name","Value": f"gpucloud-pod-{pod_id}"}]
+                }]
+            )
+            instance_id = run["Instances"][0]["InstanceId"]
+            
+            # Update pod with instance_id and instance_type
+            pod.instance_id = instance_id
+            pod.instance_type = instance_type
+            db.commit()
+            
+            print(f"DEBUG: [provision] launched instance {instance_id} for pod {pod_id}")
+
+            # Wait until running, then fetch PublicIpAddress
+            print(f"DEBUG: Waiting for instance {instance_id} to be running...")
+            waiter = ec2.get_waiter("instance_running")
+            waiter.wait(InstanceIds=[instance_id])
+
+            print(f"DEBUG: Instance {instance_id} is now running, getting details...")
+            desc = ec2.describe_instances(InstanceIds=[instance_id])
+            inst = desc["Reservations"][0]["Instances"][0]
+            public_ip = inst.get("PublicIpAddress")
+
+            if not public_ip:
+                print(f"DEBUG: [provision] instance has no PublicIpAddress")
+            else:
+                print(f"DEBUG: Got public IP: {public_ip}")
+
+            # Update pod with final details and set to running
+            pod.public_ip = public_ip
+            pod.status = 'running'
+            db.commit()
+            
+            print(f"DEBUG: [provision] running pod_id={pod_id} ip={public_ip} id={instance_id}")
+
+            # Start metering in background
+            _start_metering(pod_id)
+            
+        except Exception as e:
+            print(f"DEBUG: Error provisioning pod {pod_id}: {e}")
+            print(f"DEBUG: Exception type: {type(e).__name__}")
+            import traceback
+            print(f"DEBUG: Full traceback: {traceback.format_exc()}")
+            # Set status to error
             try:
-                if _check_job_timeout(pod_id, start_time):
-                    _update(pod_id, status=PodStatus.error)
-                    return
-                
-                log.info(f"[provision] Launch attempt {attempt + 1} for pod {pod_id}")
-                
-                run = ec2.run_instances(
-                    ImageId=settings.BASE_AMI_ID,
-                    InstanceType=instance_type,
-                    MinCount=1, MaxCount=1,
-                    IamInstanceProfile={"Name": settings.AWS_INSTANCE_PROFILE},
-                    SubnetId=settings.AWS_SUBNET_ID,
-                    SecurityGroupIds=[settings.AWS_SECURITY_GROUP_ID],
-                    KeyName=settings.AWS_SSH_KEY_NAME,
-                    TagSpecifications=[{
-                        "ResourceType": "instance",
-                        "Tags": [{"Key":"Name","Value": f"gpucloud-pod-{pod_id}"}]
-                    }]
-                )
-                instance_id = run["Instances"][0]["InstanceId"]
-                break
-                
-            except ClientError as e:
-                if attempt == MAX_RETRIES - 1:
-                    raise
-                log.warning(f"[provision] Launch attempt {attempt + 1} failed: {e}, retrying...")
-                time.sleep(2 ** attempt)  # Exponential backoff
-        
-        if not instance_id:
-            raise Exception("Failed to launch instance after all retries")
-        
-        # Update with instance details
-        _update(pod_id, instance_id=instance_id, instance_type=instance_type)
-        
-        # Wait for instance to be running with timeout
-        log.info(f"[provision] Waiting for instance {instance_id} to be running...")
-        waiter = ec2.get_waiter("instance_running")
-        
-        # Use waiter with timeout
-        waiter.wait(
-            InstanceIds=[instance_id],
-            WaiterConfig={'Delay': 10, 'MaxAttempts': 30}  # 5 minute timeout
-        )
-        
-        if _check_job_timeout(pod_id, start_time):
-            # Terminate the instance we just created
-            try:
-                ec2.terminate_instances(InstanceIds=[instance_id])
+                pod.status = 'error'
+                db.commit()
             except:
-                pass
-            _update(pod_id, status=PodStatus.error)
-            return
-        
-        # Get instance details
-        desc = ec2.describe_instances(InstanceIds=[instance_id])
-        inst = desc["Reservations"][0]["Instances"][0]
-        public_ip = inst.get("PublicIpAddress")
-        
-        if not public_ip:
-            log.warning("[provision] instance has no PublicIpAddress")
-        
-        # Final status update
-        _update(pod_id, public_ip=public_ip, status=PodStatus.running, provider=Provider.aws)
-        log.info(f"[provision] running pod_id={pod_id} ip={public_ip} id={instance_id}")
-        
-        # Start metering in background (non-blocking)
-        _start_metering(pod_id)
-        
-    except ClientError as e:
-        log.error(f"[provision] AWS error: {e}")
-        _update(pod_id, status=PodStatus.error)
-    except Exception as e:
-        log.error(f"[provision] Unexpected error: {e}")
-        log.error(traceback.format_exc())
-        _update(pod_id, status=PodStatus.error)
-        
-        # Cleanup any partially created resources
-        if 'instance_id' in locals() and instance_id:
-            try:
-                ec2 = boto3.client("ec2", region_name=settings.AWS_REGION)
-                ec2.terminate_instances(InstanceIds=[instance_id])
-            except:
-                pass
+                # If pod variable doesn't exist, fetch it again
+                pod = db.query(Pod).filter(Pod.id == pod_id).first()
+                if pod:
+                    pod.status = 'error'
+                    db.commit()
+            raise
 
 def _start_metering(pod_id: int):
     """Start metering in background thread to avoid blocking"""
@@ -214,7 +164,7 @@ def _start_metering(pod_id: int):
         try:
             _meter_until_stopped(pod_id)
         except Exception as e:
-            log.error(f"[meter] Metering failed for pod {pod_id}: {e}")
+            print(f"DEBUG: [meter] Metering failed for pod {pod_id}: {e}")
             _update(pod_id, status=PodStatus.error)
     
     thread = threading.Thread(target=meter_thread, daemon=True)
@@ -222,7 +172,7 @@ def _start_metering(pod_id: int):
 
 def _meter_until_stopped(pod_id: int):
     """MVP metering: every 60s, charge per-minute based on hourly_rate_cents."""
-    log.info(f"[meter] start pod_id={pod_id}")
+    print(f"DEBUG: [meter] start pod_id={pod_id}")
     
     while True:
         time.sleep(60)
@@ -231,7 +181,7 @@ def _meter_until_stopped(pod_id: int):
         with Session(engine) as s:
             pod = s.get(Pod, pod_id)
             if not pod or str(pod.status) != str(PodStatus.running):
-                log.info(f"[meter] pod not running, stop. pod_id={pod_id}")
+                print(f"DEBUG: [meter] pod not running, stop. pod_id={pod_id}")
                 return
             
             user_id = pod.user_id
@@ -240,51 +190,152 @@ def _meter_until_stopped(pod_id: int):
         # Atomic debit
         ok = _atomic_debit(user_id, per_minute)
         if not ok:
-            log.info(f"[meter] credits depleted, stopping pod_id={pod_id}")
+            print(f"DEBUG: [meter] credits depleted, stopping pod_id={pod_id}")
             teardown_pod(pod_id)
             return
 
-def teardown_pod(pod_id: int):
-    """Teardown a pod with comprehensive error handling and cleanup"""
-    log.info(f"[teardown] start pod_id={pod_id}")
+def stop_pod(pod_id: int):
+    """Stop a pod (pause the instance, don't terminate it)"""
+    print(f"DEBUG: Starting pod stop for pod {pod_id}")
     
-    try:
-        # Get pod details
-        with Session(engine) as s:
-            pod = s.get(Pod, pod_id)
+    # Keep session open for the entire function
+    with Session(engine) as db:
+        try:
+            # Get pod from database
+            pod = db.query(Pod).filter(Pod.id == pod_id).first()
+            
             if not pod:
-                log.warning(f"[teardown] Pod {pod_id} not found")
+                logger.error(f"Pod {pod_id} not found in database")
+                return
+
+            print(f"DEBUG: Found pod {pod_id} with status {pod.status}, instance_id: {pod.instance_id}")
+
+            # Update status to stopping
+            pod.status = 'stopping'
+            db.commit()
+            
+            # If pod has no instance_id, it's already stopped
+            if not pod.instance_id:
+                print(f"DEBUG: Pod {pod_id} has no instance_id, marking as stopped")
+                pod.status = 'stopped'
+                pod.public_ip = None
+                db.commit()
+                logger.info(f"Pod {pod_id} marked as stopped (no instance to stop)")
                 return
             
-            instance_id = pod.instance_id
-            instance_type = pod.instance_type
-        
-        # Stop AWS instance if it exists (don't terminate for restart capability)
-        if instance_id:
-            ec2 = boto3.client("ec2", region_name=settings.AWS_REGION)
+            # AWS EC2 stop logic (don't terminate!)
+            logger.info(f"[stop] start pod_id={pod_id} instance_id={pod.instance_id}")
+            
+            ec2 = boto3.client("ec2", region_name=settings.AWS_REGION,
+                              aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                              aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY)
+
+            # Stop the EC2 instance (don't terminate!)
+            print(f"DEBUG: Stopping instance {pod.instance_id}")
+            ec2.stop_instances(InstanceIds=[pod.instance_id])
+            
+            # Wait for instance to be stopped
+            print(f"DEBUG: Waiting for instance {pod.instance_id} to be stopped...")
+            waiter = ec2.get_waiter("instance_stopped")
+            waiter.wait(InstanceIds=[pod.instance_id], WaiterConfig={'MaxAttempts': 30, 'Delay': 10})
+            
+            print(f"DEBUG: Instance {pod.instance_id} stopped successfully")
+            
+            # Update pod status to stopped and clear public IP (but keep instance_id for restart)
+            pod.status = 'stopped'
+            pod.public_ip = None
+            # Keep instance_id so we can restart later!
+            db.commit()
+            
+            print(f"DEBUG: [stop] stopped pod_id={pod_id}")
+            logger.info(f"Pod {pod_id} stopped successfully (instance preserved for restart)")
+            
+        except Exception as e:
+            print(f"DEBUG: Error stopping pod {pod_id}: {e}")
+            print(f"DEBUG: Exception type: {type(e).__name__}")
+            import traceback
+            print(f"DEBUG: Full traceback: {traceback.format_exc()}")
+            # Set status to error
             try:
-                log.info(f"[teardown] Stopping instance {instance_id} (preserving for restart)")
-                ec2.stop_instances(InstanceIds=[instance_id])
-                
-                # Wait for instance to be stopped
-                waiter = ec2.get_waiter("instance_stopped")
-                waiter.wait(
-                    InstanceIds=[instance_id],
-                    WaiterConfig={'Delay': 5, 'MaxAttempts': 60}  # 5 minute timeout
-                )
-                
-                log.info(f"[teardown] Instance {instance_id} stopped successfully (can be restarted)")
-                
-            except ClientError as ce:
-                log.warning(f"[teardown] stop_instances: {ce}")
-            except Exception as e:
-                log.error(f"[teardown] Failed to stop instance: {e}")
-        
-        # Update status to stopped but preserve instance_id for restart capability
-        _update(pod_id, status=PodStatus.stopped, public_ip=None)
-        log.info(f"[teardown] done pod_id={pod_id}")
-        
-    except Exception as e:
-        log.error(f"[teardown] Failed: {e}")
-        log.error(traceback.format_exc())
-        _update(pod_id, status=PodStatus.error)
+                pod.status = 'error'
+                db.commit()
+            except:
+                # If pod variable doesn't exist, fetch it again
+                pod = db.query(Pod).filter(Pod.id == pod_id).first()
+                if pod:
+                    pod.status = 'error'
+                    db.commit()
+            raise
+
+def teardown_pod(pod_id: int):
+    """Teardown/Delete a pod completely (terminate the instance)"""
+    print(f"DEBUG: Starting pod teardown/deletion for pod {pod_id}")
+    
+    # Keep session open for the entire function
+    with Session(engine) as db:
+        try:
+            # Get pod from database
+            pod = db.query(Pod).filter(Pod.id == pod_id).first()
+            
+            if not pod:
+                logger.error(f"Pod {pod_id} not found in database")
+                return
+
+            print(f"DEBUG: Found pod {pod_id} with status {pod.status}, instance_id: {pod.instance_id}")
+
+            # Update status to stopping (for delete process)
+            pod.status = 'stopping'
+            db.commit()
+            
+            # If pod has no instance_id, it's already cleaned up
+            if not pod.instance_id:
+                print(f"DEBUG: Pod {pod_id} has no instance_id, marking as stopped")
+                pod.status = 'stopped'
+                pod.public_ip = None
+                db.commit()
+                logger.info(f"Pod {pod_id} marked as stopped (no instance to terminate)")
+                return
+            
+            # AWS EC2 termination logic (for delete)
+            logger.info(f"[teardown] start pod_id={pod_id} instance_id={pod.instance_id}")
+            
+            ec2 = boto3.client("ec2", region_name=settings.AWS_REGION,
+                              aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                              aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY)
+
+            # Terminate the EC2 instance (destroy it completely)
+            print(f"DEBUG: Terminating instance {pod.instance_id}")
+            ec2.terminate_instances(InstanceIds=[pod.instance_id])
+            
+            # Wait for instance to be terminated
+            print(f"DEBUG: Waiting for instance {pod.instance_id} to be terminated...")
+            waiter = ec2.get_waiter("instance_terminated")
+            waiter.wait(InstanceIds=[pod.instance_id], WaiterConfig={'MaxAttempts': 30, 'Delay': 10})
+            
+            print(f"DEBUG: Instance {pod.instance_id} terminated successfully")
+            
+            # Update pod status to stopped and clear all instance details
+            pod.status = 'stopped'
+            pod.public_ip = None
+            pod.instance_id = None  # Clear instance_id since it's terminated
+            db.commit()
+            
+            print(f"DEBUG: [teardown] terminated pod_id={pod_id}")
+            logger.info(f"Pod {pod_id} torn down successfully (instance terminated)")
+            
+        except Exception as e:
+            print(f"DEBUG: Error tearing down pod {pod_id}: {e}")
+            print(f"DEBUG: Exception type: {type(e).__name__}")
+            import traceback
+            print(f"DEBUG: Full traceback: {traceback.format_exc()}")
+            # Set status to error
+            try:
+                pod.status = 'error'
+                db.commit()
+            except:
+                # If pod variable doesn't exist, fetch it again
+                pod = db.query(Pod).filter(Pod.id == pod_id).first()
+                if pod:
+                    pod.status = 'error'
+                    db.commit()
+            raise
