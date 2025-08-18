@@ -82,8 +82,8 @@ def stop_pod(pod_id: int, session: Session = Depends(get_session), user=Depends(
         # Preserve instance_type before stopping (for restart capability)
         instance_type = pod.instance_type
         
-    # enqueue teardown by string
-    job = q.enqueue("apps.api.workers.provisioner.teardown_pod", pod.id)
+        # enqueue teardown by string
+        job = q.enqueue("apps.api.workers.provisioner.teardown_pod", pod.id)
         logger.info(f"Enqueued stop job {job.id} for pod {pod.id}")
         
         pod.status = PodStatus.stopping

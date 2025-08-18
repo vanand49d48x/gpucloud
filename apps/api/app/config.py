@@ -1,9 +1,13 @@
+import os
 from pydantic_settings import BaseSettings
 from typing import Optional
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = "postgresql://gpucloud:gpucloud@localhost:5432/gpucloud"
-    JWT_SECRET: str = "change-me"
+
+    DATABASE_URL: str
+    JWT_SECRET: str
+
+    
     
     # AWS / infra
     AWS_REGION: str = "us-east-1"
@@ -24,7 +28,7 @@ class Settings(BaseSettings):
     SYNC_INTERVAL: int = 30  # Default to 30s, can be overridden by env
     
     class Config:
-        env_file = "/home/paperspace/NewMyPods/mypods/.env"
+        env_file = os.getenv("GPUCLOUD_ENV_FILE", ".env")
         extra = "ignore"  # Ignore extra environment variables
 
 settings = Settings()
