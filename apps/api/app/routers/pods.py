@@ -220,6 +220,8 @@ def delete_pod(pod_id: int, session: Session = Depends(get_session), user=Depend
         if not pod or pod.user_id != user.id:
             raise HTTPException(status_code=404, detail="pod not found")
         
+        logger.info(f"Starting deletion of pod {pod_id} (status: {pod.status}, instance_id: {pod.instance_id})")
+        
         # If pod is running, terminate it first
         if pod.status in (PodStatus.running, PodStatus.starting):
             logger.info(f"Terminating running pod {pod_id} before deletion")
@@ -246,8 +248,9 @@ def delete_pod(pod_id: int, session: Session = Depends(get_session), user=Depend
                 detail="Pod is currently terminating. Please wait for it to terminate completely before deleting."
             )
         
-        # For stopped/error pods, proceed with deletion
+        # For stopped/error pods, proceed with immediate deletion
         instance_id = pod.instance_id
+        logger.info(f"Pod {pod_id} is in {pod.status} status, proceeding with immediate deletion")
         
         # Terminate AWS instance if it exists and is not already terminated
         if instance_id:
@@ -255,13 +258,17 @@ def delete_pod(pod_id: int, session: Session = Depends(get_session), user=Depend
                 import boto3
                 from apps.api.app.config import settings
                 
+                logger.info(f"Terminating AWS instance {instance_id} for pod {pod_id}")
                 ec2 = boto3.client("ec2", region_name=settings.AWS_REGION)
                 
                 # Check instance status
                 response = ec2.describe_instances(InstanceIds=[instance_id])
                 if response['Reservations']:
                     instance = response['Reservations'][0]['Instances'][0]
-                    if instance['State']['Name'] not in ['terminated', 'shutting-down']:
+                    instance_state = instance['State']['Name']
+                    logger.info(f"Instance {instance_id} current state: {instance_state}")
+                    
+                    if instance_state not in ['terminated', 'shutting-down']:
                         logger.info(f"Terminating instance {instance_id} for pod deletion")
                         ec2.terminate_instances(InstanceIds=[instance_id])
                         
@@ -276,12 +283,37 @@ def delete_pod(pod_id: int, session: Session = Depends(get_session), user=Depend
                         logger.info(f"Instance {instance_id} already terminated")
                         
             except Exception as e:
-                logger.warning(f"Failed to terminate instance {instance_id}: {e}")
+                logger.error(f"Failed to terminate instance {instance_id}: {e}")
                 # Continue with deletion even if AWS cleanup fails
+                # The instance might already be terminated or inaccessible
         
-        # Remove from database
-        session.delete(pod)
-        session.commit()
+        # CRITICAL: Remove from database - this must succeed
+        try:
+            logger.info(f"Removing pod {pod_id} from database")
+            session.delete(pod)
+            session.commit()
+            logger.info(f"Pod {pod_id} successfully removed from database")
+        except Exception as db_error:
+            logger.error(f"Database deletion failed for pod {pod_id}: {db_error}")
+            session.rollback()
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to remove pod from database: {str(db_error)}"
+            )
+        
+        # Verify deletion
+        try:
+            verification = session.get(Pod, pod_id)
+            if verification:
+                logger.error(f"Pod {pod_id} still exists in database after deletion!")
+                raise HTTPException(
+                    status_code=500, 
+                    detail="Pod deletion failed - pod still exists in database"
+                )
+            else:
+                logger.info(f"Pod {pod_id} deletion verified - no longer in database")
+        except Exception as verify_error:
+            logger.warning(f"Could not verify pod {pod_id} deletion: {verify_error}")
         
         logger.info(f"Pod {pod_id} deleted successfully")
         return {
@@ -293,5 +325,10 @@ def delete_pod(pod_id: int, session: Session = Depends(get_session), user=Depend
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to delete pod {pod_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete pod")
+        logger.error(f"Unexpected error deleting pod {pod_id}: {e}")
+        # Try to rollback any pending transaction
+        try:
+            session.rollback()
+        except:
+            pass
+        raise HTTPException(status_code=500, detail=f"Failed to delete pod: {str(e)}")

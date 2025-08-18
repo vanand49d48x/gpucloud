@@ -437,14 +437,13 @@ def teardown_pod(pod_id: int):
             
             print(f"DEBUG: Instance {pod.instance_id} terminated successfully")
             
-            # Update pod status to stopped and clear all instance details
-            pod.status = 'stopped'
-            pod.public_ip = None
-            pod.instance_id = None  # Clear instance_id since it's terminated
+            # Since this is called during deletion, remove the pod from database
+            print(f"DEBUG: [teardown] removing pod {pod_id} from database after instance termination")
+            db.delete(pod)
             db.commit()
             
             print(f"DEBUG: [teardown] terminated pod_id={pod_id}")
-            logger.info(f"Pod {pod_id} torn down successfully (instance terminated)")
+            logger.info(f"Pod {pod_id} torn down successfully (instance terminated and removed from database)")
             
         except Exception as e:
             print(f"DEBUG: Error tearing down pod {pod_id}: {e}")
