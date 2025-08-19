@@ -752,7 +752,7 @@ export default function PodManager() {
 
       {/* Web Terminal Modal */}
       {selectedPod && (
-                <WebTerminal 
+        <WebTerminal 
           podId={selectedPod.id}
           instanceId={selectedPod.instance_id || ''}
           publicIp={selectedPod.public_ip || ''}
@@ -762,7 +762,6 @@ export default function PodManager() {
             setShowTerminalModal(false);
             setSelectedPod(null);
           }}
-          onSecurityGroupUpdate={updateSecurityGroup}
           token={token || undefined}
         />
       )}

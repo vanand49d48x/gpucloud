@@ -217,7 +217,7 @@ def provision_pod(pod_id: int, instance_type: str = "t3.micro"):
                               aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
                               aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY)
 
-            # Launch EC2 instance
+            # Launch EC2 instance with SSM enabled
             run = ec2.run_instances(
                 ImageId=settings.BASE_AMI_ID,
                 InstanceType=instance_type,
@@ -225,10 +225,13 @@ def provision_pod(pod_id: int, instance_type: str = "t3.micro"):
                 IamInstanceProfile={"Name": settings.AWS_INSTANCE_PROFILE},
                 SubnetId=settings.AWS_SUBNET_ID,
                 SecurityGroupIds=[settings.AWS_SECURITY_GROUP_ID],
-                KeyName=settings.AWS_SSH_KEY_NAME,
+                # No SSH key needed - using SSM instead
                 TagSpecifications=[{
                     "ResourceType": "instance",
-                    "Tags": [{"Key":"Name","Value": f"gpucloud-pod-{pod_id}"}]
+                    "Tags": [
+                        {"Key":"Name","Value": f"gpucloud-pod-{pod_id}"},
+                        {"Key":"SSMEnabled","Value": "true"}
+                    ]
                 }]
             )
             instance_id = run["Instances"][0]["InstanceId"]

@@ -11,7 +11,6 @@ interface WebTerminalProps {
   instanceType: string;
   isOpen: boolean;
   onClose: () => void;
-  onSecurityGroupUpdate?: (instanceId: string, userIp: string) => void;
   token?: string; // Add token prop
 }
 
@@ -28,7 +27,6 @@ function WebTerminalComponent({
   instanceType, 
   isOpen, 
   onClose,
-  onSecurityGroupUpdate,
   token
 }: WebTerminalProps) {
   const [isConnected, setIsConnected] = useState(false);
@@ -78,22 +76,12 @@ function WebTerminalComponent({
       setIsConnecting(true);
       addMessage('system', 'Connecting to instance...');
       
-      // First, get user's current IP and update security group
-      const userIp = await getUserIP();
-      addMessage('system', `Your IP: ${userIp}`);
-      
-      if (onSecurityGroupUpdate) {
-        try {
-          addMessage('system', 'Updating security group to allow your IP...');
-          onSecurityGroupUpdate(instanceId, userIp);
-        } catch (sgError) {
-          logger.warn('Security group update failed, continuing anyway', { error: sgError });
-          addMessage('system', 'Security group update failed, but continuing with connection...');
-        }
-      }
+      // For SSM-based terminals, no security group updates are needed
+      addMessage('system', 'Connecting via AWS Systems Manager (SSM)...');
 
       // Connect to the instance via WebSocket proxy
-              const wsUrl = `ws://${window.location.host}/v1/pods/${podId}/terminal?instance_id=${instanceId}&token=${token || ''}`;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/v1/pods/${podId}/terminal/${instanceId}?token=${token || ''}`;
       
       const ws = new WebSocket(wsUrl);
       
@@ -185,50 +173,6 @@ function WebTerminalComponent({
       }
     };
   }, []);
-
-  const getUserIP = async (): Promise<string> => {
-    try {
-      // Try multiple IP detection services with fallbacks
-      const services = [
-        'https://api.ipify.org?format=json',
-        'https://api.myip.com',
-        'https://ipinfo.io/json'
-      ];
-      
-      for (const service of services) {
-        try {
-          // Create an AbortController for timeout
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 5000);
-          
-          const response = await fetch(service, { 
-            method: 'GET',
-            mode: 'cors',
-            signal: controller.signal
-          });
-          
-          clearTimeout(timeoutId);
-          
-          if (response.ok) {
-            const data = await response.json();
-            const ip = data.ip || data.query || 'unknown';
-            logger.info('IP detection successful', { service, ip });
-            return ip;
-          }
-        } catch (serviceError) {
-          logger.warn('IP detection service failed', { service, error: serviceError });
-          continue;
-        }
-      }
-      
-      // Final fallback - return a safe default
-      logger.warn('All IP detection services failed, using fallback');
-      return '127.0.0.1';
-    } catch (error) {
-      logger.error('IP detection completely failed', { error });
-      return '127.0.0.1';
-    }
-  };
 
   const addMessage = (type: TerminalMessage['type'], content: string) => {
     const message: TerminalMessage = {
