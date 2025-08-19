@@ -271,13 +271,11 @@ async def websocket_terminal(
 ):
 	"""WebSocket endpoint for SSM-based terminal access to EC2 instances"""
 	
+	# Validate token parameter before accepting connection
 	if not token:
-		# Refuse without trying to close twice
+		logger.warning("WebSocket connection attempt without token")
 		try:
 			await websocket.accept()
-		except Exception:
-			pass
-		try:
 			await websocket.close(code=4001, reason="Missing token")
 		except Exception:
 			pass
@@ -286,30 +284,53 @@ async def websocket_terminal(
 	try:
 		# Accept the WebSocket connection
 		await websocket.accept()
+		logger.info(f"WebSocket connection accepted for pod {pod_id}, instance {instance_id}")
 		
-		# TODO: Implement proper JWT validation here
-		# For now, we'll use a simplified approach
-		user_id = 1  # This should come from JWT token validation
+		# Implement proper JWT validation
+		try:
+			# Parse and validate JWT token
+			from apps.api.app.security import parse_jwt
+			from apps.api.app.config import settings
+			
+			user_id_str = parse_jwt(token, settings.JWT_SECRET)
+			if not user_id_str:
+				logger.warning(f"Invalid JWT token for WebSocket connection")
+				await websocket.close(code=4002, reason="Invalid token")
+				return
+			
+			user_id = int(user_id_str)
+			logger.info(f"JWT validation successful for user {user_id}")
+			
+		except Exception as e:
+			logger.error(f"JWT validation failed: {e}")
+			await websocket.close(code=4002, reason="Invalid token")
+			return
 		
 		# Get pod details and validate access
 		db = next(get_session())
 		pod = db.get(Pod, pod_id)
 		
 		if not pod:
+			logger.warning(f"User {user_id} attempted to access non-existent pod {pod_id}")
 			await websocket.close(code=4004, reason="Pod not found")
 			return
 			
 		if pod.user_id != user_id:
+			logger.warning(f"User {user_id} attempted to access pod {pod_id} owned by user {pod.user_id}")
 			await websocket.close(code=4003, reason="Access denied")
 			return
 			
 		if pod.status != "running":
+			logger.warning(f"User {user_id} attempted to access pod {pod_id} with status {pod.status}")
 			await websocket.close(code=4005, reason="Pod not running")
 			return
 		
 		if pod.instance_id != instance_id:
+			logger.warning(f"User {user_id} attempted to access pod {pod_id} with mismatched instance ID {instance_id}")
 			await websocket.close(code=4006, reason="Instance ID mismatch")
 			return
+		
+		logger.info(f"User {user_id} authorized to access pod {pod_id}, instance {instance_id}")
 		
 		# Check if user already has an active session
 		existing_session_id = manager.get_user_session(user_id)
@@ -396,24 +417,6 @@ async def websocket_terminal(
 						}))
 						continue
 					
-					elif command.strip() == "echo":
-						# Simple echo test
-						result = await execute_ssm_command(session_id, 'echo "Hello from SSM!"')
-						await websocket.send_text(json.dumps({
-							"type": "output",
-							"content": result
-						}))
-						continue
-					
-					elif command.strip() == "simple":
-						# Simple command test using the same approach as the test command
-						result = await execute_simple_command(session_id, 'echo "Simple test"')
-						await websocket.send_text(json.dumps({
-							"type": "output",
-							"content": result
-						}))
-						continue
-					
 					elif command.strip() == "help":
 						# Show help
 						help_text = """Available commands:
@@ -436,6 +439,24 @@ Note: Commands are executed via AWS SSM and may take a moment to complete."""
 					elif command.strip() == "test":
 						# Test SSM connectivity
 						result = await test_ssm_connectivity(session_id)
+						await websocket.send_text(json.dumps({
+							"type": "output",
+							"content": result
+						}))
+						continue
+					
+					elif command.strip() == "echo":
+						# Simple echo test
+						result = await execute_ssm_command(session_id, 'echo "Hello from SSM!"')
+						await websocket.send_text(json.dumps({
+							"type": "output",
+							"content": result
+						}))
+						continue
+					
+					elif command.strip() == "simple":
+						# Simple command test using the same approach as the test command
+						result = await execute_simple_command(session_id, 'echo "Simple test"')
 						await websocket.send_text(json.dumps({
 							"type": "output",
 							"content": result
@@ -483,13 +504,30 @@ Note: Commands are executed via AWS SSM and may take a moment to complete."""
 				logger.warning(f"Error during close_session on disconnect: {close_err}")
 			return
 			
+		except Exception as e:
+			logger.error(f"Error in websocket_terminal: {e}")
+			# Guard against double-close
+			try:
+				await websocket.close(code=4000, reason=f"Error: {str(e)}")
+			except Exception:
+				pass
+			return
+		finally:
+			# Ensure cleanup happens even if there's an error
+			try:
+				if 'session_id' in locals():
+					logger.info(f"Cleaning up session {session_id} due to connection closure")
+					await manager.close_session(session_id)
+			except Exception as cleanup_err:
+				logger.warning(f"Error during cleanup: {cleanup_err}")
+	
 	except Exception as e:
-		logger.error(f"Error in websocket_terminal: {e}")
-		# Guard against double-close
+		logger.error(f"Error in websocket_terminal setup: {e}")
 		try:
-			await websocket.close(code=4000, reason=f"Error: {str(e)}")
+			await websocket.close(code=4000, reason=f"Setup error: {str(e)}")
 		except Exception:
 			pass
+		return
 
 async def execute_ssm_command(session_id: str, command: str) -> str:
 	"""Execute a command via SSM session"""
@@ -898,3 +936,35 @@ async def get_terminal_status(
 	except Exception as e:
 		logger.error(f"Error getting terminal status: {e}")
 		raise HTTPException(status_code=500, detail=f"Failed to get terminal status: {str(e)}")
+
+@router.get("/v1/pods/{pod_id}/ssh-info")
+async def get_ssh_info(
+	pod_id: int,
+	db: Session = Depends(get_session),
+	current_user = Depends(current_user)
+):
+	"""Get SSH connection information for a pod"""
+	try:
+		# Get pod details
+		pod = db.get(Pod, pod_id)
+		if not pod:
+			raise HTTPException(status_code=404, detail="Pod not found")
+		
+		if pod.user_id != current_user.id:
+			raise HTTPException(status_code=403, detail="Access denied")
+		
+		# For SSM-based terminals, we provide connection info
+		return {
+			"pod_id": pod_id,
+			"instance_id": pod.instance_id,
+			"public_ip": getattr(pod, 'public_ip', None),
+			"ssh_user": "ubuntu",  # Default user for most Linux AMIs
+			"ssh_port": 22,
+			"connection_type": "ssm",  # Indicate this uses SSM, not traditional SSH
+			"note": "This pod uses AWS SSM for secure terminal access",
+			"terminal_url": f"/terminal/{pod.instance_id}" if pod.instance_id else None
+		}
+		
+	except Exception as e:
+		logger.error(f"Error getting SSH info: {e}")
+		raise HTTPException(status_code=500, detail=f"Failed to get SSH info: {str(e)}")
