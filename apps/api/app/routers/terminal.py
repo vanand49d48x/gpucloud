@@ -616,10 +616,13 @@ async def execute_ssm_command(session_id: str, command: str) -> str:
 				return f"$ {command}\nError sending command: {str(e)}\nFallback also failed: {str(fallback_e)}\n"
 		
 		# Wait for command to complete and get output
-		max_wait = 10  # Reduced wait time for better UX
+		max_wait = 30  # Increased wait time to allow command registration
 		wait_time = 0
 		
 		logger.info(f"Waiting for command {command_id} to complete (max wait: {max_wait}s)")
+		
+		# Wait a moment for command to register with SSM
+		await asyncio.sleep(2)
 		
 		while wait_time < max_wait:
 			try:
@@ -660,15 +663,20 @@ async def execute_ssm_command(session_id: str, command: str) -> str:
 						return f"$ {command}\nCommand failed with status: {status}\n"
 				
 				# Wait before checking again
-				await asyncio.sleep(1)  # Use asyncio.sleep instead of time.sleep
-				wait_time += 1
+				await asyncio.sleep(2)  # Increased wait time between checks
+				wait_time += 2
 				
 			except Exception as e:
 				logger.error(f"Error getting command output for {command_id}: {e}")
 				if "InvocationDoesNotExist" in str(e):
-					logger.error(f"Command {command_id} invocation does not exist - this suggests a command execution issue")
-					return f"$ {command}\nError: Command execution failed - SSM agent may not have proper permissions\n"
-				break
+					logger.warning(f"Command {command_id} not yet registered, waiting...")
+					# Wait a bit longer for command to register
+					await asyncio.sleep(3)
+					wait_time += 3
+					continue
+				else:
+					logger.error(f"Unexpected error getting command output: {e}")
+					break
 		
 		# If we reach here, command is still running or failed
 		logger.warning(f"Command {command_id} execution incomplete after {max_wait}s")
@@ -703,29 +711,42 @@ async def execute_simple_command(session_id: str, command: str) -> str:
 		command_id = response['Command']['CommandId']
 		logger.info(f"Simple command {command_id} sent successfully")
 		
-		# Wait for completion (same as test command)
-		await asyncio.sleep(2)
+		# Wait for completion with better timing
+		await asyncio.sleep(3)  # Wait longer for command to register
 		
-		try:
-			output_response = ssm_client.get_command_invocation(
-				CommandId=command_id,
-				InstanceId=instance_id,
-				PluginName='aws:runShellScript'
-			)
-			
-			status = output_response['Status']
-			logger.info(f"Simple command {command_id} status: {status}")
-			
-			if status == 'Success':
-				output = output_response.get('StandardOutputContent', '')
-				result = f"$ {command}\n{output}"
-				return result
-			else:
-				return f"$ {command}\nCommand failed with status: {status}\n"
+		max_attempts = 10
+		for attempt in range(max_attempts):
+			try:
+				output_response = ssm_client.get_command_invocation(
+					CommandId=command_id,
+					InstanceId=instance_id,
+					PluginName='aws:runShellScript'
+				)
 				
-		except Exception as e:
-			logger.error(f"Error getting simple command output: {e}")
-			return f"$ {command}\nError getting command output: {str(e)}\n"
+				status = output_response['Status']
+				logger.info(f"Simple command {command_id} status: {status}")
+				
+				if status == 'Success':
+					output = output_response.get('StandardOutputContent', '')
+					result = f"$ {command}\n{output}"
+					return result
+				elif status in ['Failed', 'Cancelled', 'TimedOut']:
+					return f"$ {command}\nCommand failed with status: {status}\n"
+				else:
+					# Command still running, wait and try again
+					await asyncio.sleep(2)
+					continue
+					
+			except Exception as e:
+				if "InvocationDoesNotExist" in str(e) and attempt < max_attempts - 1:
+					logger.info(f"Command {command_id} not yet registered, attempt {attempt + 1}/{max_attempts}")
+					await asyncio.sleep(2)
+					continue
+				else:
+					logger.error(f"Error getting simple command output: {e}")
+					return f"$ {command}\nError getting command output: {str(e)}\n"
+		
+		return f"$ {command}\nCommand execution incomplete after {max_attempts} attempts\n"
 			
 	except Exception as e:
 		logger.error(f"Error executing simple command: {e}")
