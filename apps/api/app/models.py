@@ -34,6 +34,7 @@ class Pod(SQLModel, table=True):
     vram_gb: Optional[int] = None
     hourly_rate_cents: int
     volume_s3_prefix: Optional[str] = None
+    storage_expansion_history: Optional[str] = None  # JSON string of storage expansion events
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 

@@ -119,8 +119,42 @@ def expand_pod_storage(pod_id: int, body: ExpandStorageIn, session: Session = De
         else:
             raise HTTPException(status_code=400, detail="provide new_size_gb (> current) or additional_gb (>0)")
 
+        # Log the storage expansion attempt to the database FIRST
+        import json
+        from datetime import datetime
+        
+        # Get existing history or create new
+        existing_history = pod.storage_expansion_history or "[]"
+        try:
+            history = json.loads(existing_history)
+        except:
+            history = []
+        
+        # Add new expansion event with "attempting" status
+        expansion_event = {
+            "timestamp": datetime.now().isoformat(),
+            "old_size_gb": current_size,
+            "new_size_gb": target_size,
+            "volume_id": root_volume_id,
+            "status": "attempting",
+            "message": f"Storage expansion attempted: {current_size}GB → {target_size}GB"
+        }
+        history.append(expansion_event)
+        
+        # Update the pod record
+        pod.storage_expansion_history = json.dumps(history)
+        session.add(pod)
+        session.commit()
+
         # Modify the volume size
         ec2.modify_volume(VolumeId=root_volume_id, Size=target_size)
+        
+        # Update status to "initiated" on success
+        expansion_event["status"] = "initiated"
+        expansion_event["message"] = f"Storage expansion initiated: {current_size}GB → {target_size}GB"
+        pod.storage_expansion_history = json.dumps(history)
+        session.add(pod)
+        session.commit()
 
         # Enqueue filesystem resize job if instance is running
         if pod.status == "running":
@@ -150,6 +184,22 @@ def expand_pod_storage(pod_id: int, body: ExpandStorageIn, session: Session = De
         raise
     except Exception as e:
         logger.error(f"Failed to expand storage for pod {pod_id}: {e}")
+        
+        # Update the expansion event status to "failed" in database
+        try:
+            if 'expansion_event' in locals():
+                expansion_event["status"] = "failed"
+                expansion_event["message"] = f"Storage expansion failed: {current_size}GB → {target_size}GB (Error: {str(e)})"
+                expansion_event["error"] = str(e)
+                expansion_event["failed_at"] = datetime.now().isoformat()
+                
+                pod.storage_expansion_history = json.dumps(history)
+                session.add(pod)
+                session.commit()
+                logger.info(f"Updated storage expansion history for pod {pod_id} with failure")
+        except Exception as db_error:
+            logger.warning(f"Failed to update storage expansion history for pod {pod_id}: {db_error}")
+        
         raise HTTPException(status_code=500, detail="Failed to expand storage")
 
 @router.post("/pods")
@@ -592,6 +642,27 @@ def get_pod_activity_logs(
                 public_ip=pod.public_ip,
                 user_id=user.id
             ))
+        
+        # Storage expansion history - get from database
+        if pod.storage_expansion_history:
+            try:
+                import json
+                expansion_history = json.loads(pod.storage_expansion_history)
+                for event in expansion_history:
+                    activity_logs.append(PodActivityLog(
+                        id=len(activity_logs) + 1,
+                        pod_id=pod.id,
+                        action="storage_expanded",
+                        status=event.get("status", "unknown"),
+                        message=event.get("message", "Storage expansion event"),
+                        timestamp=event.get("timestamp", datetime.now().isoformat()),
+                        instance_id=pod.instance_id,
+                        instance_type=pod.instance_type,
+                        public_ip=pod.public_ip,
+                        user_id=user.id
+                    ))
+            except Exception as e:
+                logger.warning(f"Could not parse storage expansion history for pod {pod.id}: {e}")
         
         # Current status
         current_time = datetime.now().isoformat()
