@@ -9,6 +9,7 @@ from apps.api.app.db import engine
 from apps.api.app.models import Pod, PodStatus, Provider
 from apps.api.app.config import settings
 from apps.api.app.queue import q
+from apps.api.app.models import User
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -142,9 +143,94 @@ def start_stopped_pod(pod_id: int):
             raise
 
 def provision_pod(pod_id: int, instance_type: str = "t3.micro"):
-    """Provision a pod with enhanced error handling"""
+    """Provision a pod with enhanced error handling and per-pod IAM support"""
     print(f"DEBUG: Starting pod provision for pod {pod_id}")
     
+    # Check if per-pod IAM is enabled
+    if getattr(settings, 'ENABLE_PER_POD_IAM', False):
+        print(f"DEBUG: Using per-pod IAM for pod {pod_id}")
+        _provision_pod_with_per_pod_iam(pod_id, instance_type)
+    else:
+        print(f"DEBUG: Using legacy provisioning for pod {pod_id}")
+        _provision_pod_legacy(pod_id, instance_type)
+
+def _provision_pod_with_per_pod_iam(pod_id: int, instance_type: str):
+    """Provision pod using per-pod IAM roles and instance profiles"""
+    try:
+        from apps.api.app.pod_creator import PodCreator
+        
+        with Session(engine) as db:
+            # Get pod from database
+            pod = db.query(Pod).filter(Pod.id == pod_id).first()
+            
+            if not pod:
+                logger.error(f"Pod {pod_id} not found in database")
+                return
+            
+            # Get user for customer_id
+            user = db.query(User).filter(User.id == pod.user_id).first()
+            if not user:
+                logger.error(f"User not found for pod {pod_id}")
+                return
+            
+            # Update status to starting
+            pod.status = PodStatus.starting
+            db.commit()
+            
+            # Initialize pod creator
+            creator = PodCreator()
+            
+            # Create pod with per-pod IAM
+            result = creator.create_pod(
+                customer_id=str(user.id),
+                pod_id=str(pod_id),
+                ami_id=settings.BASE_AMI_ID,
+                instance_type=instance_type,
+                subnet_id=settings.AWS_SUBNET_ID,
+                sg_id=settings.AWS_SECURITY_GROUP_ID,
+                key_name=settings.AWS_SSH_KEY_NAME if settings.AWS_SSH_KEY_NAME else None,
+                volume_size_gb=60
+            )
+            
+            # Update pod with results
+            pod.instance_id = result["instance_id"]
+            pod.instance_type = instance_type
+            pod.public_ip = result.get("public_ip")
+            pod.status = PodStatus.running
+            
+            # Store additional metadata
+            pod.role_name = result.get("role_name")
+            pod.role_arn = result.get("role_arn")
+            pod.instance_profile = result.get("instance_profile")
+            pod.log_group = result.get("log_group")
+            
+            db.commit()
+            
+            print(f"DEBUG: [per_pod_iam] running pod_id={pod_id} ip={result.get('public_ip')} id={result['instance_id']}")
+            logger.info(f"Pod {pod_id} provisioned successfully with per-pod IAM: {result}")
+            
+            # Start metering in background
+            _start_metering(pod_id)
+            
+    except Exception as e:
+        print(f"DEBUG: Error provisioning pod {pod_id} with per-pod IAM: {e}")
+        print(f"DEBUG: Exception type: {type(e).__name__}")
+        import traceback
+        print(f"DEBUG: Full traceback: {traceback.format_exc()}")
+        
+        # Set status to error
+        try:
+            with Session(engine) as db:
+                pod = db.query(Pod).filter(Pod.id == pod_id).first()
+                if pod:
+                    pod.status = 'error'
+                    db.commit()
+        except:
+            pass
+        raise
+
+def _provision_pod_legacy(pod_id: int, instance_type: str):
+    """Legacy pod provisioning using shared instance profile"""
     # Keep session open for the entire function
     with Session(engine) as db:
         try:

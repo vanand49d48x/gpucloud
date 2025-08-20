@@ -1,0 +1,35 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Deny",
+      "Action": "iam:*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Deny",
+      "Action": "sts:AssumeRole",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Deny",
+      "Action": [
+        "ec2:*",
+        "eks:*",
+        "rds:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:*",
+        "ssmmessages:*",
+        "ec2messages:*",
+        "logs:*",
+        "s3:*"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

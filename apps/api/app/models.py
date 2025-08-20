@@ -37,6 +37,12 @@ class Pod(SQLModel, table=True):
     storage_expansion_history: Optional[str] = None  # JSON string of storage expansion events
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    # Per-pod IAM and logging fields
+    role_name: Optional[str] = None  # IAM role name for this pod
+    role_arn: Optional[str] = None   # IAM role ARN for this pod
+    instance_profile: Optional[str] = None  # Instance profile name for this pod
+    log_group: Optional[str] = None  # CloudWatch log group for this pod
 
 class Usage(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

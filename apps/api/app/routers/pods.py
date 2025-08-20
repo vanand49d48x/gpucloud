@@ -243,6 +243,12 @@ def list_pods(session: Session = Depends(get_session), user=Depends(current_user
             "updated_at": p.updated_at.isoformat() if p.updated_at else None,
             "gpu_type": p.gpu_type,
             "vram_gb": p.vram_gb,
+            # Per-pod IAM and logging information
+            "role_name": p.role_name,
+            "role_arn": p.role_arn,
+            "instance_profile": p.instance_profile,
+            "log_group": p.log_group,
+            "uses_per_pod_iam": bool(p.role_name and p.instance_profile),
         }
         for p in rows
     ]

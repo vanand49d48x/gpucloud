@@ -1,11 +1,14 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlmodel import Session, select
 from typing import List, Optional
-import os
-import glob
-import json
-import time
-from datetime import datetime, timedelta
+from apps.api.app.db import get_session
+from apps.api.app.models import Pod
+from apps.api.app.deps import current_user
+from apps.api.app.config import settings
+import boto3
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/logs", tags=["logs"])
@@ -28,6 +31,18 @@ class LogEntry:
             "app": self.app,
             "source": self.source
         }
+
+class CloudWatchLogEntry(BaseModel):
+    timestamp: str
+    message: str
+    log_stream: str
+
+class PodLogsResponse(BaseModel):
+    pod_id: int
+    log_group: str
+    log_entries: List[CloudWatchLogEntry]
+    total_entries: int
+    next_token: Optional[str] = None
 
 @router.get("/")
 async def get_all_logs(
@@ -138,6 +153,137 @@ async def tail_app_logs(
     except Exception as e:
         logger.error(f"Error tailing logs for app {app_name}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to tail logs: {str(e)}")
+
+@router.get("/pods/{pod_id}/cloudwatch")
+def get_pod_cloudwatch_logs(
+    pod_id: int,
+    session: Session = Depends(get_session),
+    user=Depends(current_user),
+    limit: int = Query(100, ge=1, le=1000),
+    start_time: Optional[str] = Query(None, description="ISO timestamp for start time"),
+    end_time: Optional[str] = Query(None, description="ISO timestamp for end time"),
+    next_token: Optional[str] = Query(None, description="Pagination token")
+):
+    """Get CloudWatch logs for a specific pod"""
+    try:
+        # Verify pod belongs to user
+        pod = session.get(Pod, pod_id)
+        if not pod or pod.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Pod not found")
+        
+        # Check if pod has CloudWatch logging enabled
+        if not pod.log_group:
+            raise HTTPException(
+                status_code=400, 
+                detail="Pod does not have CloudWatch logging enabled"
+            )
+        
+        # Initialize CloudWatch logs client
+        logs_client = boto3.client(
+            'logs',
+            region_name=settings.AWS_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
+        )
+        
+        # Prepare filter parameters
+        filter_params = {
+            'logGroupName': pod.log_group,
+            'limit': limit
+        }
+        
+        if start_time:
+            filter_params['startTime'] = int(datetime.fromisoformat(start_time.replace('Z', '+00:00')).timestamp() * 1000)
+        
+        if end_time:
+            filter_params['endTime'] = int(datetime.fromisoformat(end_time.replace('Z', '+00:00')).timestamp() * 1000)
+        
+        if next_token:
+            filter_params['nextToken'] = next_token
+        
+        # Get log events
+        response = logs_client.filter_log_events(**filter_params)
+        
+        # Parse log entries
+        log_entries = []
+        for event in response.get('events', []):
+            log_entries.append(CloudWatchLogEntry(
+                timestamp=datetime.fromtimestamp(event['timestamp'] / 1000).isoformat(),
+                message=event['message'],
+                log_stream=event['logStreamName']
+            ))
+        
+        return PodLogsResponse(
+            pod_id=pod_id,
+            log_group=pod.log_group,
+            log_entries=log_entries,
+            total_entries=len(log_entries),
+            next_token=response.get('nextToken')
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get CloudWatch logs for pod {pod_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve CloudWatch logs")
+
+@router.get("/pods/{pod_id}/cloudwatch/streams")
+def get_pod_log_streams(
+    pod_id: int,
+    session: Session = Depends(get_session),
+    user=Depends(current_user)
+):
+    """Get available log streams for a pod"""
+    try:
+        # Verify pod belongs to user
+        pod = session.get(Pod, pod_id)
+        if not pod or pod.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Pod not found")
+        
+        # Check if pod has CloudWatch logging enabled
+        if not pod.log_group:
+            raise HTTPException(
+                status_code=400, 
+                detail="Pod does not have CloudWatch logging enabled"
+            )
+        
+        # Initialize CloudWatch logs client
+        logs_client = boto3.client(
+            'logs',
+            region_name=settings.AWS_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
+        )
+        
+        # Get log streams
+        response = logs_client.describe_log_streams(
+            logGroupName=pod.log_group,
+            orderBy='LastEventTime',
+            descending=True,
+            maxItems=50
+        )
+        
+        streams = []
+        for stream in response.get('logStreams', []):
+            streams.append({
+                "name": stream['logStreamName'],
+                "first_event_time": stream.get('firstEventTime'),
+                "last_event_time": stream.get('lastEventTime'),
+                "stored_bytes": stream.get('storedBytes', 0)
+            })
+        
+        return {
+            "pod_id": pod_id,
+            "log_group": pod.log_group,
+            "log_streams": streams,
+            "total_streams": len(streams)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get log streams for pod {pod_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve log streams")
 
 async def collect_logs_from_all_apps() -> List[LogEntry]:
     """Collect logs from all known applications"""

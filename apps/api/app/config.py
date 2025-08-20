@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     AWS_INSTANCE_PROFILE: str = ""  # Name (not ARN) of instance profile attached to instances
     BASE_AMI_ID: Optional[str] = None  # e.g., Ubuntu 22.04 AMI
     
+    # Per-pod IAM and logging configuration
+    AWS_POD_PERMISSIONS_BOUNDARY: Optional[str] = None  # ARN of permissions boundary for pod roles
+    ENABLE_PER_POD_IAM: bool = True  # Enable per-pod IAM roles and instance profiles
+    ENABLE_PER_POD_LOGGING: bool = True  # Enable per-pod CloudWatch log groups
+    S3_BUCKET: Optional[str] = None  # Optional S3 bucket for pod data storage
+    
     # Catalog and pricing
     AWS_CATALOG_REGIONS: list[str] = ["us-east-1"]  # regions you want to offer
     MARKUP_MULTIPLIER: float = 1.5  # 50% markup
