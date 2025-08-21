@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { FileText, Search, Filter, Download, RefreshCw, Eye, EyeOff, Play, Square, X } from 'lucide-react';
 import { clientLogger as logger } from '../utils/logger';
+import CloudWatchLogs from './CloudWatchLogs';
 
 interface LogEntry {
   timestamp: string;
@@ -30,6 +31,7 @@ export default function LogViewer({ isOpen, onClose, appName, podId, token }: Lo
   const [isLoading, setIsLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshInterval, setRefreshInterval] = useState(5000); // 5 seconds
+  const [activeTab, setActiveTab] = useState<'activity' | 'cloudwatch'>('activity');
   
   const logsEndRef = useRef<HTMLDivElement>(null);
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -217,13 +219,39 @@ export default function LogViewer({ isOpen, onClose, appName, podId, token }: Lo
             <FileText className="w-6 h-6 text-blue-400" />
             <div>
               <h2 className="text-lg font-semibold text-white">
-                {podId ? `Pod ${podId} Activity Logs` : `Log Viewer ${appName ? `- ${appName}` : ''}`}
+                {podId ? `Pod ${podId} Logs` : `Log Viewer ${appName ? `- ${appName}` : ''}`}
               </h2>
               <p className="text-sm text-gray-400">
-                {filteredLogs.length} of {logs.length} logs • Auto-refresh: {autoRefresh ? 'ON' : 'OFF'}
+                {activeTab === 'activity' ? `${filteredLogs.length} of ${logs.length} logs` : 'CloudWatch logs'} • Auto-refresh: {autoRefresh ? 'ON' : 'OFF'}
               </p>
             </div>
           </div>
+          
+          {/* Tabs for pod logs */}
+          {podId && (
+            <div className="flex items-center space-x-1 bg-gray-800 rounded-lg p-1">
+              <button
+                onClick={() => setActiveTab('activity')}
+                className={`px-3 py-1 text-sm rounded-md transition-colors ${
+                  activeTab === 'activity'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-400 hover:text-white hover:bg-gray-700'
+                }`}
+              >
+                Activity Logs
+              </button>
+              <button
+                onClick={() => setActiveTab('cloudwatch')}
+                className={`px-3 py-1 text-sm rounded-md transition-colors ${
+                  activeTab === 'cloudwatch'
+                    ? 'bg-blue-600 text-white'
+                    : 'text-white hover:bg-gray-700'
+                }`}
+              >
+                CloudWatch Logs
+              </button>
+            </div>
+          )}
           
           <div className="flex items-center space-x-2">
             {/* Follow Toggle */}
@@ -336,45 +364,65 @@ export default function LogViewer({ isOpen, onClose, appName, podId, token }: Lo
 
         {/* Logs Display */}
         <div className="flex-1 overflow-hidden">
-          <div className="h-full overflow-y-auto font-mono text-sm bg-black p-4">
-            {filteredLogs.length === 0 ? (
-              <div className="text-center text-gray-500 py-8">
-                <FileText className="w-12 h-12 mx-auto mb-4 text-gray-600" />
-                <p>No logs found</p>
-                {searchTerm && <p className="text-sm">Try adjusting your search or filters</p>}
-              </div>
-            ) : (
-              filteredLogs.map((log, index) => (
-                <div key={index} className="mb-1 hover:bg-gray-800 p-1 rounded">
-                  <span className="text-gray-500 text-xs">[{log.timestamp}]</span>
-                  <span className={`ml-2 font-bold ${getLevelColor(log.level)}`}>
-                    {log.level}
-                  </span>
-                  <span className="ml-2 text-white">{log.message}</span>
-                  {log.data && (
-                    <span className="ml-2 text-gray-400 text-xs">
-                      | {typeof log.data === 'object' ? JSON.stringify(log.data) : log.data}
-                    </span>
-                  )}
-                  {log.source && (
-                    <span className="ml-2 text-blue-400 text-xs">[{log.source}]</span>
-                  )}
+          {activeTab === 'activity' ? (
+            <div className="h-full overflow-y-auto font-mono text-sm bg-black p-4">
+              {filteredLogs.length === 0 ? (
+                <div className="text-center text-gray-500 py-8">
+                  <FileText className="w-12 h-12 mx-auto mb-4 text-gray-600" />
+                  <p>No logs found</p>
+                  {searchTerm && <p className="text-sm">Try adjusting your search or filters</p>}
                 </div>
-              ))
-            )}
-            <div ref={logsEndRef} />
-          </div>
+              ) : (
+                filteredLogs.map((log, index) => (
+                  <div key={index} className="mb-1 hover:bg-gray-800 p-1 rounded">
+                    <span className="text-gray-500 text-xs">[{log.timestamp}]</span>
+                    <span className={`ml-2 font-bold ${getLevelColor(log.level)}`}>
+                      {log.level}
+                    </span>
+                    <span className="ml-2 text-white">{log.message}</span>
+                    {log.data && (
+                      <span className="ml-2 text-gray-400 text-xs">
+                        | {typeof log.data === 'object' ? JSON.stringify(log.data) : log.data}
+                      </span>
+                    )}
+                    {log.source && (
+                      <span className="ml-2 text-blue-400 text-xs">[{log.source}]</span>
+                    )}
+                  </div>
+                ))
+              )}
+              <div ref={logsEndRef} />
+            </div>
+          ) : (
+            <div className="h-full overflow-y-auto bg-gray-900 p-4">
+              <CloudWatchLogs
+                podId={podId!}
+                token={token!}
+                isVisible={activeTab === 'cloudwatch'}
+              />
+            </div>
+          )}
         </div>
 
         {/* Footer */}
         <div className="p-3 border-t border-gray-700 bg-gray-800 text-xs text-gray-400">
           <div className="flex justify-between items-center">
             <span>
-              Showing {filteredLogs.length} of {logs.length} logs
-              {searchTerm && ` • Filtered by: "${searchTerm}"`}
+              {activeTab === 'activity' ? (
+                <>
+                  Showing {filteredLogs.length} of {logs.length} logs
+                  {searchTerm && ` • Filtered by: "${searchTerm}"`}
+                </>
+              ) : (
+                'CloudWatch logs from AWS'
+              )}
             </span>
             <span>
-              {isFollowing ? 'Following' : 'Not following'} • 
+              {activeTab === 'activity' && (
+                <>
+                  {isFollowing ? 'Following' : 'Not following'} • 
+                </>
+              )}
               Auto-refresh: {autoRefresh ? `${refreshInterval / 1000}s` : 'OFF'}
             </span>
           </div>

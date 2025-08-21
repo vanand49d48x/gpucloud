@@ -10,7 +10,8 @@
         "iam:CreateInstanceProfile",
         "iam:AddRoleToInstanceProfile",
         "iam:PassRole",
-        "iam:GetPolicy"
+        "iam:GetPolicy",
+        "sts:AssumeRole"
       ],
       "Resource": [
         "arn:aws:iam::458178359313:role/gpucloud-pod-*",

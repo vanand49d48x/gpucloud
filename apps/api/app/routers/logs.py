@@ -177,14 +177,45 @@ def get_pod_cloudwatch_logs(
                 status_code=400, 
                 detail="Pod does not have CloudWatch logging enabled"
             )
-        
-        # Initialize CloudWatch logs client
-        logs_client = boto3.client(
-            'logs',
+
+        # Check if pod has IAM role configured
+        if not pod.role_arn:
+            raise HTTPException(
+                status_code=400,
+                detail="Pod does not have IAM role configured"
+            )
+
+        # Assume the pod's IAM role to access CloudWatch logs
+        # This ensures the backend uses the pod's permissions, not its own
+        sts_client = boto3.client(
+            'sts',
             region_name=settings.AWS_REGION,
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
         )
+
+        try:
+            # Assume the pod's role temporarily
+            assumed_role = sts_client.assume_role(
+                RoleArn=pod.role_arn,
+                RoleSessionName=f"gpucloud-logs-{pod_id}"
+            )
+
+            # Create CloudWatch client with assumed role credentials
+            logs_client = boto3.client(
+                'logs',
+                region_name=settings.AWS_REGION,
+                aws_access_key_id=assumed_role['Credentials']['AccessKeyId'],
+                aws_secret_access_key=assumed_role['Credentials']['SecretAccessKey'],
+                aws_session_token=assumed_role['Credentials']['SessionToken']
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to assume role {pod.role_arn}: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to assume pod IAM role"
+            )
         
         # Prepare filter parameters
         filter_params = {
@@ -246,21 +277,52 @@ def get_pod_log_streams(
                 status_code=400, 
                 detail="Pod does not have CloudWatch logging enabled"
             )
-        
-        # Initialize CloudWatch logs client
-        logs_client = boto3.client(
-            'logs',
+
+        # Check if pod has IAM role configured
+        if not pod.role_arn:
+            raise HTTPException(
+                status_code=400,
+                detail="Pod does not have IAM role configured"
+            )
+
+        # Assume the pod's IAM role to access CloudWatch logs
+        # This ensures the backend uses the pod's permissions, not its own
+        sts_client = boto3.client(
+            'sts',
             region_name=settings.AWS_REGION,
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY
         )
+
+        try:
+            # Assume the pod's role temporarily
+            assumed_role = sts_client.assume_role(
+                RoleArn=pod.role_arn,
+                RoleSessionName=f"gpucloud-logs-{pod_id}"
+            )
+
+            # Create CloudWatch client with assumed role credentials
+            logs_client = boto3.client(
+                'logs',
+                region_name=settings.AWS_REGION,
+                aws_access_key_id=assumed_role['Credentials']['AccessKeyId'],
+                aws_secret_access_key=assumed_role['Credentials']['SecretAccessKey'],
+                aws_session_token=assumed_role['Credentials']['SessionToken']
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to assume role {pod.role_arn}: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to assume pod IAM role"
+            )
         
         # Get log streams
         response = logs_client.describe_log_streams(
             logGroupName=pod.log_group,
             orderBy='LastEventTime',
             descending=True,
-            maxItems=50
+            limit=50
         )
         
         streams = []

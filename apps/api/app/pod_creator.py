@@ -157,11 +157,18 @@ class PodCreator:
         """Create IAM role with permissions boundary"""
         trust_policy = {
             "Version": "2012-10-17",
-            "Statement": [{
-                "Effect": "Allow",
-                "Principal": {"Service": "ec2.amazonaws.com"},
-                "Action": "sts:AssumeRole"
-            }]
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"Service": "ec2.amazonaws.com"},
+                    "Action": "sts:AssumeRole"
+                },
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": f"arn:aws:iam::{self.account_id}:user/gpucloud-provisioner"},
+                    "Action": "sts:AssumeRole"
+                }
+            ]
         }
         
         try:
@@ -213,7 +220,9 @@ class PodCreator:
                         "logs:CreateLogGroup",
                         "logs:CreateLogStream",
                         "logs:PutLogEvents",
-                        "logs:DescribeLogStreams"
+                        "logs:DescribeLogStreams",
+                        "logs:FilterLogEvents",
+                        "logs:DescribeLogGroups"
                     ],
                     "Resource": f"arn:aws:logs:{self.region}:{self.account_id}:log-group:{log_group}:*"
                 }

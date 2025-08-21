@@ -19,6 +19,7 @@ interface Pod {
   instance_id: string | null;
   instance_type?: string;
   created_at?: string;
+  log_group?: string;
 }
 
 interface CatalogItem {
